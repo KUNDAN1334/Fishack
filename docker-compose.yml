@@ -1,0 +1,67 @@
+# Fishly infrastructure — one command up: `docker compose up -d --build`
+#
+# PRODUCTION NOTE: in production these would be managed services (RDS +
+# pgvector or a dedicated vector DB, ElastiCache) with backups, replicas and
+# TLS. Compose is the solo-developer equivalent: same topology, zero ops.
+
+services:
+  postgres:
+    # Official pgvector build of Postgres 16 — vector + full-text search in
+    # one datastore (see ADR-001: why Postgres FTS instead of rank_bm25)
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: fishly
+      POSTGRES_PASSWORD: fishly
+      POSTGRES_DB: fishly
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fishly -d fishly"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  api:
+    build: .
+    env_file: .env
+    environment:
+      # Inside the compose network, service names are the hostnames —
+      # override whatever localhost values .env has
+      DATABASE_URL: postgresql://fishly:fishly@postgres:5432/fishly
+      REDIS_URL: redis://redis:6379/0
+      # Ollama runs on the host or in the optional profile below
+      OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # Optional local LLM — start with: docker compose --profile ollama up -d
+  # Then: docker compose exec ollama ollama pull llama3.1:8b
+  # and set OLLAMA_ENABLED=true in .env
+  ollama:
+    image: ollama/ollama
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama:/root/.ollama
+
+volumes:
+  pgdata:
+  ollama:
