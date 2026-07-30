@@ -21,3 +21,9 @@ node_modules/
 # Eval run artifacts are timestamped local outputs; committed baselines live
 # in data/golden/baselines/ explicitly
 fishnet_reports/
+
+# NOT ignored, deliberately (ADR-008):
+#   data/raw/                        the generated corpus — committed so the
+#                                    golden set has stable ground truth
+#   data/generation/.prose_cache/    LLM prose cache — committed so a fresh
+#                                    clone reproduces the corpus with no API key

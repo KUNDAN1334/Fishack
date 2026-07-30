@@ -1,0 +1,3 @@
+The issue where events under the gbx. namespace were not being tracked occurred because the Flowlytics SDK was initialized with the incorrect write key for that project. 
+
+To resolve this, locate the correct project write key in your Flowlytics dashboard under Project Settings and update your initialization configuration to use this valid key. Once the updated configuration is deployed, events prefixed with the gbx. namespace will immediately begin recording in your analytics pipeline.

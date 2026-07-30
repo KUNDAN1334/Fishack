@@ -26,6 +26,19 @@ migrate:
 smoke:
 	python scripts/smoke_test.py
 
+# Generate the synthetic Flowlytics corpus into data/raw/ (cached; --offline
+# works with no API keys)
+corpus:
+	python scripts/generate_corpus.py
+
+# Load the corpus into Postgres: chunk, embed, version
+ingest:
+	python scripts/ingest.py run
+
+# Chunk counts and token distribution per tenant/source
+ingest-stats:
+	python scripts/ingest.py stats
+
 # Run the API locally with reload (faster dev loop than the docker image)
 api:
 	uvicorn app.main:app --reload --port 8000

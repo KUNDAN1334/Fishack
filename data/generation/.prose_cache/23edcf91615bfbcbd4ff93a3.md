@@ -1,0 +1,5 @@
+When sending requests to Flowlytics via webhooks, the platform employs an exponential backoff strategy to handle temporary failures. This strategy involves increasing the delay between retries after each failure. The initial delay is set to 30 seconds.
+
+In the event of a request failure, the platform will automatically retry the request up to 3 times. This 3-attempt limit is explicitly enforced to prevent infinite loops and potential abuse. After the 3rd retry, the platform will consider the request failed and will not attempt further retries.
+
+The exponential backoff delay is calculated based on the number of previous failures. The delay is doubled after each failure, up to a maximum of 4 minutes (30 seconds * 2^2). This strategy helps to prevent overwhelming the platform with repeated requests and ensures that the system remains stable and responsive. By implementing this strategy, Flowlytics ensures that webhooks are delivered efficiently and reliably.

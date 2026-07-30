@@ -1,0 +1,3 @@
+Our daily scheduled export of billing data to our Google Cloud Storage bucket has been failing since yesterday morning. The execution logs show permission denied error GCS-403 on every attempt, despite the fact that we haven't changed any IAM roles or service account configurations on our end. 
+
+Could you please check if there were any recent updates to the required permissions or IP whitelist requirements for GCS integrations? We need to get this pipeline restored as soon as possible for our internal reporting.

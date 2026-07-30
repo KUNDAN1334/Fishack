@@ -1,0 +1,5 @@
+The Flowlytics query syntax is used to extract and manipulate data from the analytics database. It consists of a combination of keywords, operators, and functions that are used to construct a query.
+
+A query is composed of a `SELECT` statement followed by a `FROM` clause, which specifies the data source. The `SELECT` statement can include one or more columns, which can be aggregated using functions such as `SUM`, `AVG`, and `COUNT`. The `FROM` clause can specify one or more data sources, which can be joined using the `JOIN` operator.
+
+The query syntax also supports filtering data using the `WHERE` clause, which can include conditions such as equality, inequality, and range checks. Additionally, the `GROUP BY` clause can be used to group data by one or more columns, and the `HAVING` clause can be used to filter groups based on aggregated values.
