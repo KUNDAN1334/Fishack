@@ -103,6 +103,67 @@ class Settings(BaseSettings):
     embedding_model_name: str = "BAAI/bge-small-en-v1.5"
     embedding_dim: int = 384
 
+    # --------------------------------------------------------- retrieval --
+    # Design.md §5: each leg proposes candidates, RRF merges them to top-20.
+    # Per-leg limit == fusion limit is deliberate: asking a leg for MORE than
+    # we will keep costs almost nothing (both indexes are already sorted) and
+    # gives RRF room to promote a chunk that leg A ranked 18th but leg B
+    # ranked 2nd — which is exactly the agreement signal hybrid exists for.
+    retrieval_candidates_per_leg: int = 20
+    retrieval_fusion_top_k: int = 20
+
+    # Design.md §6: top-5 chunks go to the LLM. More context is not free —
+    # it costs tokens, latency, and "needle in a haystack" dilution (§4).
+    rerank_top_k: int = 5
+
+    # RRF constant from Cormack et al. 2009 ("Reciprocal Rank Fusion
+    # Outperforms Condorcet"). k damps the gap between adjacent ranks:
+    # at k=60, rank 1 scores 1/61 and rank 2 scores 1/62 — nearly equal, so
+    # no single leg can dominate on one confident hit. Smaller k = more
+    # top-heavy; larger k = flatter/more democratic.
+    rrf_k: float = 60.0
+    # Equal weights by default. Weighting reintroduces exactly the per-corpus
+    # tuning burden RRF was chosen to avoid (ADR-011) — Phase 4 may tune
+    # these against the golden set, with evidence.
+    rrf_weight_bm25: float = 1.0
+    rrf_weight_vector: float = 1.0
+
+    # HNSW beam width at query time. pgvector's default is 40, which is too
+    # small once a selective `tenant_id` filter discards most of the beam —
+    # the filtered-ANN problem documented in 001_init.sql and interview_prep
+    # Q6. 100 costs a few ms at our scale and materially protects recall.
+    hnsw_ef_search: int = 100
+
+    # ---------------------------------------------------------- reranker --
+    # bge-reranker-base: cross-encoder, ~280MB, CPU-viable. Design.md §6
+    # explicitly says use a lightweight variant, not the largest.
+    # PRODUCTION NOTE: a paid setup would use Cohere Rerank (hosted, no local
+    # compute, already-normalized scores) or bge-reranker-large on GPU.
+    reranker_model_name: str = "BAAI/bge-reranker-base"
+    reranker_enabled: bool = True
+    # 16 pairs per batch: modest CPU memory, still amortizes per-batch cost.
+    reranker_batch_size: int = 16
+    # Cross-encoder input is query + chunk together. 512 is the model's own
+    # limit; our chunks average ~200 tokens so this rarely binds, but silent
+    # truncation here would corrupt scores, so we set it explicitly and log.
+    reranker_max_length: int = 512
+
+    # ---------------------------------------- conditional reranking (§13c) --
+    # OFF by default in Phase 2 on purpose: always-reranking is the quality
+    # CEILING, and Phase 4 needs that ceiling as a baseline to measure what
+    # conditional reranking actually costs in recall. Flip to true to trade
+    # quality for latency. See ADR-014.
+    conditional_rerank_enabled: bool = False
+    # "Ambiguous" = the top RRF score is not clearly ahead of the Nth.
+    # Window of 5 matches rerank_top_k: we care whether the set we would ship
+    # unreranked is already well-ordered.
+    rerank_ambiguity_window: int = 5
+    # Relative margin (s1 - sN) / s1. 0.30 is a starting point, not a
+    # measured optimum — Phase 4's threshold-tuning script calibrates it
+    # against the golden set. Documented as provisional so nobody mistakes it
+    # for a tuned value.
+    rerank_margin_threshold: float = 0.30
+
     @property
     def provider_order(self) -> list[str]:
         """Parsed fallback chain, e.g. ['groq', 'gemini', 'openrouter']."""
