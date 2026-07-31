@@ -41,3 +41,9 @@ include = ["app*", "fishnet*"]
 # needing an explicit @pytest.mark.asyncio on each test
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    # Needs a live Postgres+pgvector. These SKIP rather than fail when the
+    # database is down, so `pytest -q` is green with Docker stopped. Run only
+    # the pure suite with: pytest -m "not integration"
+    "integration: requires docker compose up -d postgres redis",
+]
