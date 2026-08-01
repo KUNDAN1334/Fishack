@@ -43,8 +43,22 @@ ingest-stats:
 api:
 	uvicorn app.main:app --reload --port 8000
 
+# Side-by-side BM25 / vector / hybrid / reranked for any query (Phase 2)
+playground:
+	python scripts/retrieval_playground.py --tenant acme
+
 test:
 	pytest -q
+
+# Pure tests only — no Postgres needed (integration tests skip themselves,
+# this just makes the intent explicit and the run faster)
+test-unit:
+	pytest -q -m "not integration"
+
+# The isolation test on its own. Run this before every commit that touches
+# retrieval; it is the check that a leak cannot ship (Design.md §8).
+test-isolation:
+	pytest -q tests/test_tenant_isolation.py tests/test_tenant_scope.py
 
 # Phase 4 will wire this to the real harness: python -m fishnet.run
 eval:
