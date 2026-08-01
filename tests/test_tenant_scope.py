@@ -135,7 +135,7 @@ def test_real_legs_compose_cleanly():
     scope = TenantScope(pool=None, tenant_id="acme")
 
     bm25_sql = scope._compose(build_bm25_leg("ERR_TIMEOUT_502", 20))
-    assert "to_tsvector" in bm25_sql
+    assert "websearch_to_tsquery" in bm25_sql
     assert "ts_rank_cd" in bm25_sql
     assert "WHERE c.tenant_id = $1" in bm25_sql
 
@@ -144,18 +144,49 @@ def test_real_legs_compose_cleanly():
     assert "WHERE c.tenant_id = $1" in vector_sql
 
 
-def test_bm25_leg_uses_or_semantics_not_and():
+def test_bm25_leg_rewrites_and_to_or_but_leaves_phrases_alone():
     """Pinned in a pure test so the regression is caught without a database.
 
-    `plainto_tsquery`/`websearch_to_tsquery` AND their terms, which turns the
-    keyword leg into a boolean filter returning nothing for most realistic
-    multi-concept queries. BM25 is an OR-ed, summed-score retriever: a
-    document matching 4 of 6 terms still scores, it just scores lower.
+    Two failures this guards against, both of which shipped once:
+
+    1. Leaving `&` in place -> boolean retrieval. The keyword leg returns
+       nothing for realistic multi-concept queries and RRF silently
+       degenerates to vector-only.
+    2. Flattening everything to OR -> a query for ERR_TIMEOUT_502 matches any
+       chunk containing merely 'err', because the FTS parser splits the
+       identifier into three lexemes. Exact-identifier precision is the whole
+       reason this leg exists.
+
+    The fix replaces only ` & ` (which separates concepts) and leaves ` <-> `
+    (which holds an identifier or quoted phrase together) untouched.
     """
-    leg = build_bm25_leg("webhook retry limit", 20)
-    assert "' | '" in leg.prelude, "lexemes must be OR-ed"
-    assert "websearch_to_tsquery" not in leg.prelude
-    assert "plainto_tsquery" not in leg.prelude
+    leg = build_bm25_leg("webhook retry limit ERR_TIMEOUT_502", 20)
+    assert "replace(" in leg.prelude
+    assert "' & '" in leg.prelude and "' | '" in leg.prelude
+    assert "<->" not in leg.prelude, "the phrase operator must not be rewritten"
+    assert "NULLIF" in leg.prelude, "an all-stopword query must yield NULL, not ''::tsquery"
+
+
+def test_and_to_or_rewrite_preserves_phrase_groups():
+    """The rewrite itself, applied to the exact strings Postgres renders.
+
+    Verified against real `websearch_to_tsquery(...)::text` output captured
+    from the playground's --explain, so this test encodes observed behavior
+    rather than an assumption about the format.
+    """
+    def rewrite(rendered: str) -> str:
+        return rendered.replace(" & ", " | ")
+
+    # Observed: websearch_to_tsquery('english', 'ERR_TIMEOUT_502')
+    assert rewrite("'err' <-> 'timeout' <-> '502'") == "'err' <-> 'timeout' <-> '502'"
+
+    # Concepts get OR-ed, the identifier group survives intact.
+    assert rewrite("'webhook' & 'retri' & 'err' <-> 'timeout' <-> '502'") == (
+        "'webhook' | 'retri' | 'err' <-> 'timeout' <-> '502'"
+    )
+
+    # Plain multi-word query: every term becomes optional.
+    assert rewrite("'webhook' & 'retri' & 'limit'") == "'webhook' | 'retri' | 'limit'"
 
 
 def test_vector_leg_orders_by_distance_not_similarity():

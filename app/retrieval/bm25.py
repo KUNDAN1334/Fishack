@@ -35,10 +35,10 @@ logger = logging.getLogger(__name__)
 _RANK_NORMALIZATION = 32
 
 
-# Build the tsquery by OR-ing the query's own lexemes.
+# THE MOST IMPORTANT LINE IN THIS FILE. It went through two wrong versions
+# before this one, and both mistakes are instructive, so the reasoning stays.
 #
-# THIS IS THE MOST IMPORTANT FOUR LINES IN THE FILE, and the first version got
-# it wrong, so the reasoning is worth spelling out.
+# --- Attempt 1: websearch_to_tsquery as-is. Wrong: AND semantics. ---------
 #
 # Every convenient Postgres helper ANDs its terms:
 #   plainto_tsquery('webhook retry limit')      -> 'webhook' & 'retri' & 'limit'
@@ -61,23 +61,66 @@ _RANK_NORMALIZATION = 32
 # retrieval" is a claim in the README rather than a thing that happens. No
 # error, no log line, and the arm you would blame is the one still working.
 #
-# So we lex the query with to_tsvector (which normalizes, stems, and drops
-# stopwords exactly as the indexed `tsv` column was built) and join the
-# resulting lexemes with `|`. `quote_literal` wraps each lexeme so a lexeme
-# containing a quote cannot break the cast. Zero lexemes (an all-stopword
-# query) yields NULL, and `tsv @@ NULL` matches nothing — the correct answer,
-# reached without an error.
+# --- Attempt 2: OR every lexeme. Fixes recall, loses identifier precision --
 #
-# PRODUCTION NOTE: OR semantics matches far more rows, so Postgres scores more
-# candidates per query. At our scale (~2k chunks) that is microseconds. On a
-# large corpus you would want the ranking pushed into the index — a real BM25
-# engine (OpenSearch/Vespa) or ParadeDB's pg_search — rather than a GIN scan
-# feeding ts_rank_cd.
-_LEXEME_OR_TSQUERY = """
+# Lexing with to_tsvector and joining lexemes with `|` fixed the zero-result
+# problem. But running ts_debug on a real query shows what it cost:
+#
+#   to_tsvector('ERR_TIMEOUT_502')  ->  '502':3 'err':1 'timeout':2
+#   parser tokens                   ->  ERR(asciiword) TIMEOUT(asciiword) 502(uint)
+#
+# The default parser treats `_` as a separator, so an identifier becomes three
+# INDEPENDENT lexemes. A flat OR then matches a chunk containing merely "err"
+# — and it did: a query for ERR_TIMEOUT_502 pulled an ERR_SCHEMA_MISMATCH
+# ticket into BM25's top 5 on the strength of that one token. That is exactly
+# the exact-identifier precision Design.md §5 says this leg exists to provide,
+# thrown away.
+#
+# --- Attempt 3 (this one): OR across CONCEPTS, phrase within IDENTIFIERS ---
+#
+# The key observation is what websearch_to_tsquery does with a multi-token
+# identifier. It does NOT use `&` there:
+#
+#   websearch_to_tsquery('ERR_TIMEOUT_502')  ->  'err' <-> 'timeout' <-> '502'
+#
+# `<->` is FOLLOWED-BY: it matches only where those lexemes appear adjacent,
+# in order. That is true exact-identifier matching, and the parser hands it to
+# us for free. So the two operators carry different meanings and deserve
+# different treatment:
+#
+#   `&`    separates CONCEPTS the user typed  ->  should be OR (ranked retrieval)
+#   `<->`  holds ONE identifier together      ->  must stay adjacent
+#
+# Replacing only ` & ` with ` | ` in the rendered tsquery leaves `<->` groups
+# untouched, and tsquery precedence (`<->` binds tighter than `&`, which binds
+# tighter than `|`) makes the result parse the way we want:
+#
+#   'webhook' & 'retri' & 'limit' & 'err' <-> 'timeout' <-> '502'
+#      becomes
+#   'webhook' | 'retri' | 'limit' | ('err' <-> 'timeout' <-> '502')
+#
+# A chunk mentioning only "err" no longer matches the identifier clause, while
+# a chunk about webhooks still matches on one concept. Quoted phrases the user
+# types ("rate limit") also render as `<->` and are preserved the same way.
+#
+# NULLIF guards the empty case: an all-stopword query renders as '', and
+# ''::tsquery emits a NOTICE. NULL instead — `tsv @@ NULL` matches nothing.
+#
+# KNOWN LIMITATION: websearch's `-exclusion` renders as `!'term'`, and under OR
+# semantics `a | !b` matches nearly everything. Support queries essentially
+# never use it, so this is documented rather than handled. If it ever matters,
+# detect `!` in the rendered text and fall back to the strict query.
+#
+# PRODUCTION NOTE: this is string surgery on a rendered tsquery, which is safe
+# only because Postgres always quotes lexemes and pads operators with spaces.
+# It is a solo-dev-scale trick. A real BM25 engine (OpenSearch/Vespa, or
+# ParadeDB's pg_search) exposes per-clause operators directly and needs none
+# of it.
+_CONCEPT_OR_PHRASE_TSQUERY = """
 WITH q AS (
-    SELECT (
-        SELECT string_agg(quote_literal(t.lexeme), ' | ')
-          FROM unnest(tsvector_to_array(to_tsvector('english', $2))) AS t(lexeme)
+    SELECT NULLIF(
+        replace(websearch_to_tsquery('english', $2)::text, ' & ', ' | '),
+        ''
     )::tsquery AS tsq
 )
 """
@@ -88,27 +131,26 @@ def build_bm25_leg(query: str, limit: int) -> LegQuery:
 
     Two independent choices are baked in here:
 
-    1. OR semantics over the query's lexemes — see `_LEXEME_OR_TSQUERY` above.
-       This is what makes the leg a *ranked* retriever rather than a boolean
-       filter, and it is the difference between hybrid retrieval working and
-       silently not working.
+    1. OR across concepts, phrase-adjacency within identifiers — see
+       `_CONCEPT_OR_PHRASE_TSQUERY` above. This is what makes the leg a
+       *ranked* retriever rather than a boolean filter, while keeping the
+       exact-identifier precision that is the entire reason Design.md §5 wants
+       a keyword leg at all.
 
-    2. `to_tsvector` as the parser. Like `websearch_to_tsquery` and unlike
-       `to_tsquery`, it never raises on ordinary punctuation — a real support
-       question ("why does POST /v2/events return 502?") must not 500 the
-       endpoint. Using the same function that built the indexed `tsv` column
-       also guarantees query and document are tokenized identically, which is
-       one fewer place for a stemming mismatch to hide.
+    2. `websearch_to_tsquery` as the parser. Unlike `to_tsquery` it never
+       raises on ordinary punctuation — a real support question ("why does
+       POST /v2/events return 502?") must not 500 the endpoint — and unlike
+       `plainto_tsquery` it emits `<->` for multi-token identifiers and
+       user-typed quoted phrases, which is precisely the structure we want to
+       preserve.
 
-    What we give up by not using `websearch_to_tsquery`: quoted phrases and
-    `-exclusion`. Both are nice, neither is worth AND semantics. If Phase 4
-    shows identifier queries need true phrase matching, the fix is to add a
-    phrase-detecting branch here — not to change fusion.
+    The one thing given up is `-exclusion`, which is meaningless under OR
+    semantics. Documented as a known limitation rather than handled.
     """
     return LegQuery(
         leg=LEG_BM25,
         # $2 is the raw query text. $1 is the tenant id, bound by TenantScope.
-        prelude=_LEXEME_OR_TSQUERY,
+        prelude=_CONCEPT_OR_PHRASE_TSQUERY,
         joins="CROSS JOIN q",
         projection=f"ts_rank_cd(c.tsv, q.tsq, {_RANK_NORMALIZATION}) AS score",
         # The @@ match is what the GIN index on tsv actually serves. With an

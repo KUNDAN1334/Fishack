@@ -41,6 +41,7 @@ from app.config import get_settings  # noqa: E402
 from app.db.engine import create_pool  # noqa: E402
 from app.embeddings.encoder import get_encoder  # noqa: E402
 from app.embeddings.service import EmbeddingService  # noqa: E402
+from app.retrieval.conditional import compute_margin  # noqa: E402
 from app.retrieval.models import RetrievalResult, ScoredChunk  # noqa: E402
 from app.retrieval.service import build_retrieval_service  # noqa: E402
 from app.retrieval.tenant_scope import TenantScope  # noqa: E402
@@ -101,7 +102,7 @@ def rerank_annotation(hybrid_positions: dict[str, int]):
     return annotate
 
 
-def print_summary(hybrid: RetrievalResult, reranked: RetrievalResult | None) -> None:
+def print_summary(hybrid: RetrievalResult, reranked: RetrievalResult | None, settings) -> None:
     print("\n" + "=" * COLUMN_WIDTH)
     legs = "  ".join(
         f"{leg.leg}={leg.elapsed_ms}ms({len(leg.chunk_ids)})" + ("  ERROR" if not leg.ok else "")
@@ -117,11 +118,30 @@ def print_summary(hybrid: RetrievalResult, reranked: RetrievalResult | None) -> 
 
     if reranked and reranked.rerank:
         decision = reranked.rerank
-        margin = f"{decision.margin:.3f}" if decision.margin is not None else "n/a"
         print(
             f"rerank    ran={decision.reranked}  reason={decision.reason}  "
-            f"margin={margin} (threshold {decision.threshold})  {reranked.rerank_ms}ms"
+            f"{reranked.rerank_ms}ms"
         )
+        if decision.margin is not None:
+            print(f"          margin={decision.margin:.3f}  threshold={decision.threshold}")
+        else:
+            # The gate did not measure anything (it is off, or the scores were
+            # degenerate). Show what the margin WOULD have been anyway — this
+            # is the number Phase 4 has to calibrate rerank_margin_threshold
+            # against, and you cannot calibrate a number you never see.
+            shadow = compute_margin(
+                [candidate.fused_score for candidate in reranked.candidates],
+                settings.rerank_ambiguity_window,
+            )
+            if shadow is not None:
+                verdict = (
+                    "would SKIP" if shadow >= settings.rerank_margin_threshold
+                    else "would RERANK"
+                )
+                print(
+                    f"          margin would have been {shadow:.3f} vs threshold "
+                    f"{settings.rerank_margin_threshold} -> gate {verdict}"
+                )
     print("=" * COLUMN_WIDTH)
 
 
@@ -147,11 +167,40 @@ async def explain_tsquery(pool: asyncpg.Pool, query: str) -> None:
     print("  (a multi-lexeme identifier means BM25 matches its PARTS, not the whole)")
 
 
-async def run_query(pool: asyncpg.Pool, services, tenant: str, query: str, args) -> None:
+def split_inline_flags(line: str, args) -> tuple[str, bool, bool]:
+    """Let the REPL accept the same flags the command line takes.
+
+    Typing `ERR_TIMEOUT_502 --explain` at the prompt is the obvious thing to
+    do, and without this it silently becomes part of the query — "explain"
+    gets lexed in as an extra OR-ed term and quietly changes the ranking. A
+    debugging tool that misreads its own debugging flag is worse than one that
+    has none.
+    """
+    explain = args.explain
+    rerank = not args.no_rerank
+    tokens = []
+    for token in line.split():
+        if token == "--explain":
+            explain = True
+        elif token == "--no-rerank":
+            rerank = False
+        elif token == "--rerank":
+            rerank = True
+        else:
+            tokens.append(token)
+    return " ".join(tokens), explain, rerank
+
+
+async def run_query(
+    pool: asyncpg.Pool, services, tenant: str, query: str, args,
+    *, explain: bool | None = None, use_reranker: bool = True,
+) -> None:
     plain, with_reranker = services
+    if not use_reranker:
+        with_reranker = None
     scope = TenantScope(pool, tenant)
 
-    if args.explain:
+    if explain if explain is not None else args.explain:
         await explain_tsquery(pool, query)
 
     # Each mode goes through the same RetrievalService — that is the point.
@@ -179,7 +228,7 @@ async def run_query(pool: asyncpg.Pool, services, tenant: str, query: str, args)
             reason = reranked.rerank.reason if reranked.rerank else "unknown"
             print(f"\n4) Reranked — SKIPPED ({reason})\n{'-' * COLUMN_WIDTH}")
 
-    print_summary(hybrid, reranked)
+    print_summary(hybrid, reranked, get_settings())
 
 
 async def main() -> int:
@@ -229,22 +278,44 @@ async def main() -> int:
             await run_query(pool, services, args.tenant, args.query, args)
             return 0
 
-        print("\nType a query and press Enter. Ctrl-C or an empty line to quit.")
+        print(
+            "\nType a query and press Enter. Ctrl-C or an empty line to quit."
+            "\nInline flags work too:  <query> --explain   |   <query> --no-rerank"
+        )
         while True:
             try:
-                query = input("\n> ").strip()
+                line = input("\n> ").strip()
             except (EOFError, KeyboardInterrupt):
                 print()
                 return 0
-            if not query:
+            if not line:
                 return 0
+
+            query, explain, use_reranker = split_inline_flags(line, args)
+            if not query:
+                print("(flags only — no query text)")
+                continue
+
             try:
-                await run_query(pool, services, args.tenant, query, args)
+                await run_query(
+                    pool, services, args.tenant, query, args,
+                    explain=explain, use_reranker=use_reranker,
+                )
             except Exception as exc:  # noqa: BLE001 — a REPL must survive one bad query
                 print(f"ERROR: {type(exc).__name__}: {exc}")
     finally:
-        await pool.close()
+        # Shield the shutdown from a second Ctrl-C. Without this, hitting
+        # Ctrl-C while asyncpg is closing turns a clean exit into a
+        # CancelledError traceback — cosmetic, but a tool that dumps a stack
+        # trace on every exit trains you to ignore stack traces.
+        try:
+            await asyncio.shield(pool.close())
+        except (asyncio.CancelledError, KeyboardInterrupt):
+            pass
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    try:
+        sys.exit(asyncio.run(main()))
+    except KeyboardInterrupt:
+        sys.exit(0)

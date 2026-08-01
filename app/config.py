@@ -158,11 +158,35 @@ class Settings(BaseSettings):
     # Window of 5 matches rerank_top_k: we care whether the set we would ship
     # unreranked is already well-ordered.
     rerank_ambiguity_window: int = 5
-    # Relative margin (s1 - sN) / s1. 0.30 is a starting point, not a
-    # measured optimum — Phase 4's threshold-tuning script calibrates it
-    # against the golden set. Documented as provisional so nobody mistakes it
-    # for a tuned value.
-    rerank_margin_threshold: float = 0.30
+    # Relative margin (s1 - sN) / s1 over FUSED scores.
+    #
+    # MEASURED, not guessed. 0.30 was the initial guess and it is wrong by
+    # roughly 4x. Two real queries against the acme corpus both produced a
+    # margin of 0.076, and the arithmetic explains why: when all 5 top
+    # candidates are found by BOTH legs (13/20 overlap is typical here), the
+    # scores are 2/(k+1)...2/(k+5), whose margin is bounded at 0.062. The
+    # margin only gets large when a top-5 candidate was found by just ONE leg
+    # — a single-leg chunk at rank 5 scores 1/65 instead of 2/65, pushing the
+    # margin to 0.53.
+    #
+    # So this knob is really asking: "was the top-5 unanimous?" At 0.30 the
+    # gate would essentially never skip, which is a config that LOOKS tuned
+    # and does nothing. 0.10 sits just above the all-agree ceiling.
+    #
+    # HONEST STATUS: four real queries through the playground produced margins
+    # of 0.055, 0.059, 0.076, 0.076. At 0.10 the gate STILL never fires on any
+    # of them. So conditional reranking is implemented and tested but NOT yet
+    # demonstrated to do anything on this corpus — do not describe it as a
+    # working latency optimization until Phase 4 says so.
+    #
+    # The open question Phase 4 must answer is not just "what threshold" but
+    # "is the RRF margin a usable ambiguity signal at all?" RRF compresses
+    # scores hard by design (that is what k=60 is for), so the dynamic range
+    # available to threshold on may simply be too narrow. If the sweep over
+    # 0.03-0.15 shows no threshold that trades latency for acceptable recall,
+    # the alternative is to gate on the top RAW leg scores instead — at the
+    # cost of the cross-query comparability that made fused scores attractive.
+    rerank_margin_threshold: float = 0.10
 
     @property
     def provider_order(self) -> list[str]:

@@ -155,21 +155,26 @@ async def test_exact_identifier_is_retrievable(db_pool, seeded_corpus, capsys):
     """
     async with db_pool.acquire() as conn:
         lexemes = await conn.fetchval("SELECT to_tsvector('english', $1)::text", "ERR_TIMEOUT_502")
-        ours = await conn.fetchval(
-            """
-            SELECT (
-                SELECT string_agg(quote_literal(t.lexeme), ' | ')
-                  FROM unnest(tsvector_to_array(to_tsvector('english', $1))) AS t(lexeme)
-            )::tsquery::text
-            """,
-            "ERR_TIMEOUT_502",
-        )
-        anded = await conn.fetchval(
+        rendered = await conn.fetchval(
             "SELECT websearch_to_tsquery('english', $1)::text", "ERR_TIMEOUT_502"
         )
-    print(f"\n  to_tsvector('ERR_TIMEOUT_502')          = {lexemes}")
-    print(f"  our OR-ed tsquery                       = {ours}")
-    print(f"  websearch_to_tsquery (AND, not used)    = {anded}")
+        ours = await conn.fetchval(
+            "SELECT replace(websearch_to_tsquery('english', $1)::text, ' & ', ' | ')::tsquery::text",
+            "ERR_TIMEOUT_502",
+        )
+    print(f"\n  to_tsvector('ERR_TIMEOUT_502')      = {lexemes}")
+    print(f"  websearch_to_tsquery                = {rendered}")
+    print(f"  after our & -> | rewrite            = {ours}")
+
+    # OBSERVED (playground --explain, acme corpus):
+    #   to_tsvector          : '502':3 'err':1 'timeout':2
+    #   websearch_to_tsquery : 'err' <-> 'timeout' <-> '502'
+    #   parser tokens        : ERR(asciiword), TIMEOUT(asciiword), 502(uint)
+    # The parser splits on '_', so the identifier is three lexemes — but
+    # websearch_to_tsquery binds them with the FOLLOWED-BY operator, which is
+    # true adjacency matching. Our rewrite must leave that group alone.
+    assert "<->" in rendered, "a multi-token identifier should render as a phrase"
+    assert "<->" in ours, "the & -> | rewrite must not destroy the phrase group"
 
     scope = TenantScope(db_pool, seeded_corpus["tenant_a"])
     leg_result, chunks = await search_bm25(scope, "ERR_TIMEOUT_502", limit=10)
@@ -177,6 +182,42 @@ async def test_exact_identifier_is_retrievable(db_pool, seeded_corpus, capsys):
     assert leg_result.chunk_ids, "the error code must be retrievable by the keyword leg"
     top_chunk = chunks[leg_result.chunk_ids[0]]
     assert "ERR_TIMEOUT_502" in top_chunk.content
+
+
+async def test_identifier_query_does_not_match_a_different_error_code(db_pool, seeded_corpus):
+    """Phrase adjacency, verified by what it EXCLUDES.
+
+    The parser splits ERR_TIMEOUT_502 into ('err', 'timeout', '502'). Under a
+    flat OR, any chunk containing merely 'err' matches — and on the real acme
+    corpus that pulled an ERR_SCHEMA_MISMATCH ticket into BM25's top 5 on a
+    query for ERR_TIMEOUT_502.
+
+    Preserving `<->` means the three lexemes must appear adjacent and in
+    order, so a different ERR_ code no longer matches the identifier clause.
+    """
+    async with db_pool.acquire() as conn:
+        document_id = await conn.fetchval(
+            "SELECT id FROM documents WHERE tenant_id = $1 LIMIT 1", seeded_corpus["tenant_a"]
+        )
+        await conn.execute(
+            """
+            INSERT INTO chunks (
+                document_id, tenant_id, chunk_index, content, content_hash,
+                token_count, metadata, is_current
+            )
+            VALUES ($1, $2, 900, $3, 'decoy-hash', 20, '{}'::jsonb, true)
+            """,
+            document_id, seeded_corpus["tenant_a"],
+            "Schema errors: ERR_SCHEMA_MISMATCH is returned when a property type changes.",
+        )
+
+    scope = TenantScope(db_pool, seeded_corpus["tenant_a"])
+    leg_result, chunks = await search_bm25(scope, "ERR_TIMEOUT_502", limit=20)
+
+    matched = [chunks[chunk_id].content for chunk_id in leg_result.chunk_ids]
+    assert not any("ERR_SCHEMA_MISMATCH" in content for content in matched), (
+        "a different error code must not match on the shared 'err' token alone"
+    )
 
 
 # -------------------------------------------------------------- vector leg --
