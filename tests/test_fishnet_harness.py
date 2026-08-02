@@ -324,3 +324,74 @@ def test_naive_split_terminates_on_pathological_input():
     windows = _split_fixed("x" * 10_000, 1600, 240)
     assert len(windows) > 1
     assert sum(len(w) for w in windows) >= 10_000
+
+
+# ------------------------------------------- the ordering the eval scores --
+
+
+def _scored(chunk_id: str, rerank: float | None = None):
+    from app.retrieval.models import RetrievedChunk, ScoredChunk
+
+    return ScoredChunk(
+        chunk=RetrievedChunk(
+            chunk_id=chunk_id, document_id=f"d-{chunk_id}", tenant_id="acme", content="x"
+        ),
+        fused_score=0.02,
+        rerank_score=rerank,
+    )
+
+
+def test_eval_scores_the_reranked_order_not_the_fusion_order():
+    """The bug that made a working reranker look like a no-op.
+
+    `RetrievalService` sets `candidates` BEFORE reranking, and reranking
+    returns a new sorted list into `results` rather than resorting
+    `candidates`. Scoring `candidates` therefore measured the pre-rerank
+    ranking — so the `hybrid` and `hybrid+rerank` arms produced byte-identical
+    scorecards while the cross-encoder burned 1.4s per case doing work the
+    eval discarded. It would have led straight to "reranking is not worth the
+    latency", which is the opposite of what the data showed.
+    """
+    from app.retrieval.models import RetrievalResult
+    from fishnet.run import EvalRunner
+
+    retrieval = RetrievalResult(
+        query="q", tenant_id="acme", mode="hybrid",
+        # Fusion put "wrong" first; the reranker promoted "right".
+        candidates=[_scored("wrong"), _scored("right"), _scored("third")],
+        results=[_scored("right", rerank=0.9), _scored("wrong", rerank=0.2)],
+    )
+
+    order = EvalRunner._effective_order(retrieval)
+    assert order[0] == "right", "metrics must see the reranked order"
+    assert order == ["right", "wrong", "third"]
+
+
+def test_effective_order_keeps_unreranked_candidates_for_recall_at_20():
+    """Only `rerank_input_top_k` candidates reach the cross-encoder. The rest
+    must still be counted, or recall@20 would silently become recall@8."""
+    from app.retrieval.models import RetrievalResult
+    from fishnet.run import EvalRunner
+
+    retrieval = RetrievalResult(
+        query="q", tenant_id="acme", mode="hybrid",
+        candidates=[_scored(f"c{i}") for i in range(20)],
+        results=[_scored("c7", rerank=0.9), _scored("c0", rerank=0.5)],
+    )
+
+    order = EvalRunner._effective_order(retrieval)
+    assert order[:2] == ["c7", "c0"]
+    assert len(order) == 20
+    assert len(set(order)) == 20, "no chunk may be counted twice"
+
+
+def test_effective_order_without_a_reranker_is_the_fusion_order():
+    from app.retrieval.models import RetrievalResult
+    from fishnet.run import EvalRunner
+
+    candidates = [_scored(f"c{i}") for i in range(5)]
+    retrieval = RetrievalResult(
+        query="q", tenant_id="acme", mode="hybrid",
+        candidates=candidates, results=candidates[:5],
+    )
+    assert EvalRunner._effective_order(retrieval) == [f"c{i}" for i in range(5)]

@@ -167,31 +167,47 @@ def build_exact_identifier() -> list[GoldenCase]:
 # doc says one thing, the newer entry says another, both stay retrievable, and
 # a correct answer must prefer the newer AND say the older disagrees.
 
-CONFLICT_QUERIES: dict[str, tuple[str, str, list[str]]] = {
-    # entry_id -> (query, reference answer, must_contain)
+# entry_id -> (query, reference answer, must_contain, contested heading)
+#
+# The HEADING matters more than it looks, and its absence was a real bug.
+#
+# A docs locator with no heading resolves to EVERY chunk of the page. The
+# webhooks-overview page is ~7 chunks, so a case expecting "the changelog plus
+# that whole page" has an expected set of ~8 — and recall@5 is then
+# arithmetically capped at 5/8 = 0.63 no matter how perfect retrieval is. The
+# first stale_conflict numbers (0.43, 0.46) looked like a system failure and
+# were largely a measurement artifact.
+#
+# Naming the contested section makes the expected set what the case actually
+# means: the changelog entry, and the one passage it contradicts.
+CONFLICT_QUERIES: dict[str, tuple[str, str, list[str], str]] = {
     "CL-2026-0610-01": (
         "How many times will a failed webhook be retried?",
         "Up to 5 attempts as of v2.4 (2026-06-10). The Webhooks Overview page still says 3; "
         "it predates the change and is out of date.",
         ["5"],
+        "Retry Logic",
     ),
     "CL-2026-0610-02": (
         "How long until my events show up in the dashboard?",
         "Within 5 minutes as of v2.4. The Data Sync and Latency page still says 15 minutes "
         "and is out of date.",
         ["5"],
+        "Expected Latency",
     ),
     "CL-2026-0610-04": (
         "What is the overage rate per 1,000 events?",
         "$0.08 per 1,000 events as of v2.4, reduced from $0.10. The usage metering page "
         "still quotes the older rate.",
         ["0.08"],
+        "Overage",
     ),
     "CL-2026-0610-05": (
         "How long can a query run before it times out?",
         "60 seconds as of v2.4, raised from 30. The Query Engine page still states the "
         "older 30 second limit.",
         ["60"],
+        "Timeout",
     ),
 }
 
@@ -201,7 +217,7 @@ def build_stale_conflict() -> list[GoldenCase]:
     for entry in CHANGELOG:
         if not entry.conflicts_with or entry.entry_id not in CONFLICT_QUERIES:
             continue
-        query, reference, must_contain = CONFLICT_QUERIES[entry.entry_id]
+        query, reference, must_contain, heading = CONFLICT_QUERIES[entry.entry_id]
         for tenant in TENANTS:
             if entry.tenant and entry.tenant != tenant:
                 continue
@@ -217,7 +233,9 @@ def build_stale_conflict() -> list[GoldenCase]:
                     # The conflict rule needs both in context to fire at all.
                     expected_sources=[
                         SourceLocator(source_type="changelog", entry_id=entry.entry_id),
-                        doc_locator(entry.conflicts_with),
+                        # Narrowed to the contested SECTION, not the whole
+                        # page — see the note on CONFLICT_QUERIES.
+                        doc_locator(entry.conflicts_with, heading),
                     ],
                     reference_answer=reference,
                     must_contain=must_contain,
@@ -255,9 +273,17 @@ MULTI_TURN_SEEDS: list[tuple[str, str, str, str, list[SourceLocator], str]] = [
     ("Tell me about data retention.",
      "Retention windows depend on your plan.",
      "can I export it before it expires?",
-     "Data can be exported through the v2 export endpoints.",
-     [SourceLocator(source_type="docs", slug="data-export")],
-     "'it' must resolve to retained data"),
+     "Export through the /v2/export endpoints; the /v1 endpoints were removed in v2.4.",
+     # NOT the data-export doc. CL-2026-0610-03 SUPERSEDES it (ADR-009), so
+     # ingestion set it is_current=false and retrieval will never return it.
+     # The first version of this case expected the archived doc and the
+     # resolver flagged it on the very first run — exactly the divergence the
+     # unresolved-locator warning exists to catch. The changelog entry is now
+     # the current source of truth, which makes this a better case anyway:
+     # it verifies a superseded doc does NOT come back.
+     [SourceLocator(source_type="changelog", entry_id="CL-2026-0610-03")],
+     "'it' must resolve to retained data; ground truth is the changelog, "
+     "because the data-export doc is deliberately superseded"),
 ]
 
 

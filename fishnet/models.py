@@ -47,7 +47,20 @@ CaseType = Literal[
 # Types where a correct system refuses to answer. Kept as a set rather than
 # scattered `if case_type == ...` checks so "which cases must abstain?" has
 # exactly one answer in the codebase.
-MUST_ABSTAIN_TYPES: frozenset[str] = frozenset({"out_of_scope"})
+#
+# `cross_tenant` belongs here and was missing in the first version, which
+# produced eight spurious "case cannot score above 0" warnings on the very
+# first real run. The semantics are the same as out_of_scope: asking tenant A
+# about tenant B's private document is a question A's corpus genuinely cannot
+# answer, so abstaining is the correct behaviour and expecting zero chunks is
+# the assertion, not a defect.
+#
+# Including it also STRENGTHENS the check. A cross-tenant case now asserts two
+# things: no foreign chunk leaked, AND the system did not paper over the gap
+# with its own similar-looking document. Acme has its own onboarding runbook —
+# answering "what does the Globex Onboarding Runbook say?" from it would leak
+# nothing and still be a lie.
+MUST_ABSTAIN_TYPES: frozenset[str] = frozenset({"out_of_scope", "cross_tenant"})
 
 
 class SourceLocator(BaseModel):

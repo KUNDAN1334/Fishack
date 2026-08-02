@@ -37,21 +37,41 @@ GENERATION_METRICS = ["faithfulness", "citation_accuracy", "answer_relevance"]
 WIDTH = 88
 
 
+def _case_row(result: CaseResult) -> tuple[str, dict[str, float]]:
+    return (
+        result.case_type,
+        {
+            "recall@5": result.retrieval.recall_at_5,
+            "recall@20": result.retrieval.recall_at_20,
+            "precision@5": result.retrieval.precision_at_5,
+            "mrr": result.retrieval.mrr,
+            "hit@5": 1.0 if result.retrieval.recall_at_5 > 0 else 0.0,
+        },
+    )
+
+
 def retrieval_summary(results: list[CaseResult]) -> dict[str, dict[str, float]]:
-    per_case = [
-        (
-            result.case_type,
-            {
-                "recall@5": result.retrieval.recall_at_5,
-                "recall@20": result.retrieval.recall_at_20,
-                "precision@5": result.retrieval.precision_at_5,
-                "mrr": result.retrieval.mrr,
-                "hit@5": 1.0 if result.retrieval.recall_at_5 > 0 else 0.0,
-            },
-        )
-        for result in results
-    ]
-    return summarize(per_case)
+    """Aggregate ONE arm's results. Callers must pass a single arm.
+
+    The first version aggregated every result regardless of arm, which quietly
+    averaged bm25, vector and hybrid into one meaningless "overall" — and
+    destroyed the comparison the whole run exists to produce. Caught on the
+    first multi-arm run; see `retrieval_by_arm`.
+    """
+    return summarize([_case_row(result) for result in results])
+
+
+def retrieval_by_arm(results: list[CaseResult]) -> dict[str, dict[str, dict[str, float]]]:
+    """{arm: {case_type: {metric: value}}} — the comparison table.
+
+    Arms are never mixed. Averaging a strong arm with a weak one produces a
+    number that describes no system anybody would ship, and hides the delta
+    that is the entire point of running more than one.
+    """
+    by_arm: dict[str, list[CaseResult]] = {}
+    for result in results:
+        by_arm.setdefault(result.arm, []).append(result)
+    return {arm: retrieval_summary(arm_results) for arm, arm_results in by_arm.items()}
 
 
 def generation_summary(results: list[CaseResult]) -> dict[str, float]:
@@ -63,15 +83,29 @@ def generation_summary(results: list[CaseResult]) -> dict[str, float]:
     be high enough to dominate. `judged` reports the denominator so a scorecard
     computed over 12 of 60 cases cannot be mistaken for one computed over all.
     """
-    scored = [result.judge for result in results if not result.judge.skipped]
-    summary: dict[str, float] = {"judged": float(len(scored)), "skipped": float(
-        sum(1 for result in results if result.judge.skipped)
-    )}
+    # "Scored" means the judge produced at least one number. A JudgeScores
+    # that was never populated has skipped=False and all-None metrics, which
+    # the first version counted as judged — producing `faithfulness 0.000` on
+    # a retrieval-only run where nothing was judged at all. A scorecard
+    # reporting a catastrophic score for a metric it never measured is worse
+    # than one reporting nothing, so the check is on the VALUES, not the flag.
+    scored = [
+        result.judge
+        for result in results
+        if not result.judge.skipped
+        and any(getattr(result.judge, m) is not None for m in GENERATION_METRICS)
+    ]
+    summary: dict[str, float] = {
+        "judged": float(len(scored)),
+        "skipped": float(len(results) - len(scored)),
+    }
     for metric in GENERATION_METRICS:
         values = [
             getattr(judge, metric) for judge in scored if getattr(judge, metric) is not None
         ]
-        summary[metric] = aggregate(values)
+        # None, not 0.0, when nothing was measured — the renderer prints
+        # "not measured" rather than a number that looks like a failure.
+        summary[metric] = aggregate(values) if values else None
     return summary
 
 
@@ -122,7 +156,14 @@ def build_summary(report: RunReport) -> dict:
         "cases_total": report.cases_total,
         "cases_run": report.cases_run,
         "config": report.config_snapshot,
-        "retrieval": retrieval_summary(report.results),
+        # `retrieval` stays single-arm for the baseline gate to compare
+        # against; `retrieval_by_arm` carries the comparison. Guarding the
+        # gate against a mixed-arm number was the point of splitting them.
+        "retrieval": retrieval_summary(
+            [r for r in report.results if r.arm == report.results[0].arm]
+            if report.results else []
+        ),
+        "retrieval_by_arm": retrieval_by_arm(report.results),
         "generation": generation_summary(report.results),
         "assertions": assertion_summary(report.results),
         "cost": cost_summary(report.results),
@@ -159,7 +200,9 @@ def render(summary: dict, results: list[CaseResult]) -> str:
     add("-" * WIDTH)
     assertions = summary["assertions"]
     if not assertions:
-        add("  (none applicable)")
+        # Assertions need a generated answer, so a retrieval-only run has
+        # none. Say which, or "none applicable" reads as "nothing to check".
+        add("  not run — assertions need generated answers (use `make eval`)")
     for name, counts in sorted(assertions.items()):
         total = counts["passed"] + counts["failed"]
         mark = "PASS" if counts["failed"] == 0 else "FAIL"
@@ -174,26 +217,45 @@ def render(summary: dict, results: list[CaseResult]) -> str:
     for case_id, assertion in failures:
         add(f"        {case_id}: {assertion.name} — {assertion.detail[:70]}")
 
-    # --- 2. retrieval, per case type --------------------------------------
-    add("\nRETRIEVAL")
-    add("-" * WIDTH)
-    add("  " + " " * 22 + "".join(f"{m:>13}" for m in RETRIEVAL_METRICS))
-    retrieval = summary["retrieval"]
-    if "overall" in retrieval:
-        add(_row("overall", retrieval["overall"], RETRIEVAL_METRICS))
-    for case_type in sorted(k for k in retrieval if k != "overall"):
-        add(_row(f"  {case_type}", retrieval[case_type], RETRIEVAL_METRICS))
+    # --- 2. retrieval, per arm, per case type -----------------------------
+    by_arm = summary.get("retrieval_by_arm") or {"hybrid": summary["retrieval"]}
+    # Stable, meaningful order: single legs first, then hybrid, then reranked
+    # — so the table reads left-to-right as the pipeline is built up.
+    order = {"bm25": 0, "vector": 1, "hybrid": 2}
+    arms = sorted(by_arm, key=lambda a: (order.get(a.split("+")[0], 3), a))
+
+    for arm in arms:
+        add(f"\nRETRIEVAL — arm: {arm}")
+        add("-" * WIDTH)
+        add("  " + " " * 22 + "".join(f"{m:>13}" for m in RETRIEVAL_METRICS))
+        groups = by_arm[arm]
+        if "overall" in groups:
+            add(_row("overall", groups["overall"], RETRIEVAL_METRICS))
+        for case_type in sorted(k for k in groups if k != "overall"):
+            add(_row(f"  {case_type}", groups[case_type], RETRIEVAL_METRICS))
+
+    if len(arms) > 1:
+        add("\nARM COMPARISON (overall)")
+        add("-" * WIDTH)
+        add("  " + " " * 22 + "".join(f"{m:>13}" for m in RETRIEVAL_METRICS))
+        for arm in arms:
+            add(_row(arm, by_arm[arm].get("overall", {}), RETRIEVAL_METRICS))
 
     # --- 3. generation, measured separately -------------------------------
     add("\nGENERATION (LLM-as-judge)")
     add("-" * WIDTH)
     generation = summary["generation"]
-    add(
-        f"  judged {generation['judged']:.0f} cases, "
-        f"skipped {generation['skipped']:.0f} (quota / parse failures)"
-    )
-    for metric in GENERATION_METRICS:
-        add(f"  {metric:<22}{generation.get(metric, 0.0):>13.3f}")
+    if not generation.get("judged"):
+        # Say so, rather than printing 0.000 for something never measured.
+        add("  not measured (retrieval-only run, or judging disabled)")
+    else:
+        add(
+            f"  judged {generation['judged']:.0f} cases, "
+            f"skipped {generation['skipped']:.0f} (quota / parse failures)"
+        )
+        for metric in GENERATION_METRICS:
+            value = generation.get(metric)
+            add(f"  {metric:<22}" + (f"{value:>13.3f}" if value is not None else f"{'--':>13}"))
 
     # --- 4. cost and latency ----------------------------------------------
     add("\nCOST & LATENCY")

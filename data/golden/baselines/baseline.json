@@ -1,0 +1,91 @@
+{
+  "assertions": {},
+  "cases_total": 65,
+  "config": {
+    "citation_similarity_threshold": 0.5,
+    "conditional_rerank_enabled": false,
+    "confidence_threshold_fused": 0.015,
+    "confidence_threshold_rerank": 0.45,
+    "embedding_model": "BAAI/bge-small-en-v1.5",
+    "hnsw_ef_search": 100,
+    "llm_temperature": 0.1,
+    "rerank_input_top_k": 8,
+    "rerank_top_k": 5,
+    "reranker_enabled": true,
+    "reranker_model": "BAAI/bge-reranker-base",
+    "retrieval_candidates_per_leg": 20,
+    "retrieval_fusion_top_k": 20,
+    "rrf_k": 60.0
+  },
+  "cost": {
+    "abstention_rate": 0.0,
+    "answered": 65.0,
+    "cost_per_query_usd": 0.0,
+    "mean_generation_ms": 0.0,
+    "mean_rerank_ms": 0.0,
+    "mean_retrieval_ms": 17.046153846153846,
+    "p50_total_ms": 44,
+    "p95_total_ms": 61,
+    "total_virtual_cost_usd": 0.0
+  },
+  "generation": {
+    "answer_relevance": null,
+    "citation_accuracy": null,
+    "faithfulness": null,
+    "judged": 0.0,
+    "skipped": 65.0
+  },
+  "generator_model": "",
+  "judge_model": "",
+  "retrieval": {
+    "cross_tenant": {
+      "hit@5": 1.0,
+      "mrr": 1.0,
+      "precision@5": 1.0,
+      "recall@20": 1.0,
+      "recall@5": 1.0
+    },
+    "exact_identifier": {
+      "hit@5": 1.0,
+      "mrr": 0.725925925925926,
+      "precision@5": 0.2,
+      "recall@20": 1.0,
+      "recall@5": 1.0
+    },
+    "multi_turn": {
+      "hit@5": 1.0,
+      "mrr": 0.30624999999999997,
+      "precision@5": 0.2,
+      "recall@20": 1.0,
+      "recall@5": 1.0
+    },
+    "normal": {
+      "hit@5": 1.0,
+      "mrr": 0.7072916666666667,
+      "precision@5": 0.275,
+      "recall@20": 0.9583333333333334,
+      "recall@5": 0.7916666666666666
+    },
+    "out_of_scope": {
+      "hit@5": 1.0,
+      "mrr": 1.0,
+      "precision@5": 1.0,
+      "recall@20": 1.0,
+      "recall@5": 1.0
+    },
+    "overall": {
+      "hit@5": 0.9692307692307692,
+      "mrr": 0.7677777777777778,
+      "precision@5": 0.5323076923076924,
+      "recall@20": 0.982051282051282,
+      "recall@5": 0.9102564102564102
+    },
+    "stale_conflict": {
+      "hit@5": 0.75,
+      "mrr": 0.7006944444444444,
+      "precision@5": 0.35,
+      "recall@20": 0.9375,
+      "recall@5": 0.6875
+    }
+  }
+}

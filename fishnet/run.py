@@ -174,12 +174,19 @@ class EvalRunner:
         settings: Settings,
         concurrency: int,
         retrieval_only: bool,
+        retrieval_plain=None,
+        retrieval_reranked=None,
     ):
         self.pool = pool
         self.pipeline = pipeline
         self.judge = judge
         self.settings = settings
         self.retrieval_only = retrieval_only
+        # Two services in retrieval-only mode so `+rerank` arms can be
+        # compared against plain ones in the SAME run — the with/without
+        # reranker axis Design.md §6 asks for.
+        self.retrieval_plain = retrieval_plain or pipeline.retrieval
+        self.retrieval_reranked = retrieval_reranked
         # The rate-limit guard. Every LLM-touching case acquires this, so at
         # most `concurrency` requests are ever in flight.
         self.semaphore = asyncio.Semaphore(concurrency)
@@ -207,11 +214,22 @@ class EvalRunner:
     async def _retrieval_only(self, case, resolved, arm, result: CaseResult) -> None:
         """Measure retrieval with zero LLM calls.
 
+        Arm naming: `bm25`, `vector`, `hybrid` measure FIRST-STAGE retrieval
+        with the cross-encoder off. Append `+rerank` (`hybrid+rerank`) to
+        include it.
+
+        Reranking is off by default here for two reasons. It is the correct
+        comparison — "BM25 vs vector vs hybrid" is a question about candidate
+        generation, and reranking all three arms muddies what is being
+        compared; Design.md asks for with/without reranker as its own axis.
+        And it is 5.4s per case on a laptop CPU, so 65 cases x 3 arms with
+        reranking is ~17 minutes versus well under a minute without. An
+        experiment nobody runs measures nothing.
+
         Note it uses the RAW query, not a rewritten one — rewriting needs the
         model. For multi-turn cases that understates recall, which is stated
-        in the scorecard rather than hidden: the retrieval-only arm answers
-        "how good is retrieval given this query string", and comparing arms is
-        valid because they all share the handicap.
+        in the scorecard rather than hidden: all arms share the handicap, so
+        comparisons remain valid.
         """
         mode = "hybrid"
         if arm.startswith("bm25"):
@@ -219,14 +237,23 @@ class EvalRunner:
         elif arm.startswith("vector"):
             mode = "vector"
 
+        service = (
+            self.retrieval_reranked
+            if arm.endswith("+rerank") and self.retrieval_reranked is not None
+            else self.retrieval_plain
+        )
+
         scope = TenantScope(self.pool, case.tenant_id)
-        retrieval = await self.pipeline.retrieval.retrieve(
+        retrieval = await service.retrieve(
             scope, case.query, mode=mode, top_k=self.settings.retrieval_fusion_top_k
         )
-        # Metrics are computed over CANDIDATES, not the top-5 results, so
-        # recall@20 is measurable at all. Ordering is preserved.
-        ordered = [scored.chunk.chunk_id for scored in retrieval.candidates]
-        self._score_retrieval(result, ordered, resolved.expected_chunk_ids)
+        self._score_retrieval(
+            result, self._effective_order(retrieval), resolved.expected_chunk_ids
+        )
+        # Explicitly "not measured". Without this the scorecard counted these
+        # as judged cases with all-None scores and reported faithfulness
+        # 0.000 for a run that never called a judge.
+        result.judge = JudgeScores(skipped=True, skip_reason="retrieval-only run")
         result.retrieval_ms = retrieval.retrieval_ms
         result.rerank_ms = retrieval.rerank_ms
         result.total_ms = retrieval.total_ms
@@ -242,8 +269,7 @@ class EvalRunner:
         )
 
         ordered = (
-            [scored.chunk.chunk_id for scored in response.retrieval.candidates]
-            if response.retrieval else []
+            self._effective_order(response.retrieval) if response.retrieval else []
         )
         self._score_retrieval(result, ordered, resolved.expected_chunk_ids)
 
@@ -286,6 +312,36 @@ class EvalRunner:
                     answer=response.answer,
                     reference=case.reference_answer,
                 )
+
+    @staticmethod
+    def _effective_order(retrieval) -> list[str]:
+        """The order the SYSTEM would actually surface — reranked first.
+
+        This function exists because of a real bug. The first version scored
+        `retrieval.candidates`, which is the FUSION order: `RetrievalService`
+        sets `candidates` before reranking, and `rerank_candidates` returns a
+        new sorted list into `results` rather than resorting `candidates` in
+        place.
+
+        So every metric was computed on the pre-rerank ranking. The
+        `hybrid` and `hybrid+rerank` arms produced byte-identical scorecards
+        while the cross-encoder burned 1.4s per case doing work the eval threw
+        away — which made a working reranker look like a no-op, and would have
+        led straight to the conclusion "reranking is not worth the latency".
+
+        The order is: reranked results (their new positions), then any
+        remaining candidates in fusion order. That keeps recall@20 measurable
+        over the full candidate set while recall@5 and MRR see what the
+        reranker actually did.
+        """
+        reranked = [scored.chunk.chunk_id for scored in retrieval.results]
+        seen = set(reranked)
+        tail = [
+            scored.chunk.chunk_id
+            for scored in retrieval.candidates
+            if scored.chunk.chunk_id not in seen
+        ]
+        return reranked + tail
 
     @staticmethod
     def _score_retrieval(result: CaseResult, ordered: list[str], expected: set[str]) -> None:
@@ -335,8 +391,11 @@ async def main() -> int:
     parser.add_argument("--case-type", help="filter to one case type")
     parser.add_argument("--tenant", help="filter to one tenant")
     parser.add_argument("--resume", help="run_id of a partial run to continue")
-    parser.add_argument("--arms", default="hybrid",
-                        help="comma-separated: hybrid,bm25,vector (retrieval-only arms)")
+    parser.add_argument(
+        "--arms", default="hybrid",
+        help="comma-separated retrieval-only arms: bm25,vector,hybrid. "
+             "Append +rerank to include the cross-encoder, e.g. hybrid,hybrid+rerank",
+    )
     parser.add_argument("--retrieval-only", action="store_true",
                         help="no LLM calls at all — metrics available regardless of quota")
     parser.add_argument("--no-judge", action="store_true")
@@ -414,9 +473,20 @@ async def main() -> int:
         if not args.retrieval_only:
             arms = ["hybrid"]  # the full pipeline has one arm; comparison is retrieval-only
 
+        # A plain (no cross-encoder) service for the candidate-generation
+        # arms, and a reranked one only if some arm actually asks for it —
+        # loading the 280MB model when nothing uses it wastes a minute of
+        # startup on every fast comparison run.
+        retrieval_plain = build_retrieval_service(embeddings, settings, with_reranker=False)
+        retrieval_reranked = None
+        if any(arm.endswith("+rerank") for arm in arms) and not args.no_rerank:
+            print("loading cross-encoder for the +rerank arm(s)...")
+            retrieval_reranked = build_retrieval_service(embeddings, settings, with_reranker=True)
+
         runner = EvalRunner(
             pool=pool, pipeline=pipeline, judge=judge, settings=settings,
             concurrency=args.concurrency, retrieval_only=args.retrieval_only,
+            retrieval_plain=retrieval_plain, retrieval_reranked=retrieval_reranked,
         )
 
         report = RunReport(
