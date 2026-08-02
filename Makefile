@@ -47,6 +47,15 @@ api:
 playground:
 	python scripts/retrieval_playground.py --tenant acme
 
+# Full chat pipeline with every stage's decision visible (Phase 3)
+chat:
+	python scripts/chat_playground.py --tenant acme
+
+# Print the exact messages the model receives for a query — the fastest way to
+# answer "why did it say that?"
+show-prompt:
+	python scripts/chat_playground.py --tenant acme --show-prompt --query "webhook retry limit"
+
 test:
 	pytest -q
 
