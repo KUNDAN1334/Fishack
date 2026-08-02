@@ -1,0 +1,127 @@
+# CI — the regression gate for a RAG system (Design.md §12, ADR-022).
+#
+# Two jobs, deliberately separated by what they need:
+#
+#   tests       pure suite + integration tests against a real Postgres. No LLM
+#               keys, so it runs on every push including forks.
+#   eval        the fishnet harness in RETRIEVAL-ONLY mode, compared against
+#               the committed baseline. Also no LLM keys.
+#
+# Why retrieval-only in CI. Generation and judging need free-tier API keys
+# whose quota is shared with development, and a CI run that exhausts your
+# daily quota makes CI the enemy. Retrieval metrics need no API at all, they
+# are the numbers most likely to regress from a code change, and they run in
+# seconds. The full run with judging is a local/manual step (`make eval`).
+#
+# The hard assertions that need generation (must-abstain) therefore do NOT run
+# here — stated plainly rather than implied. `make eval` before a release is
+# the gate for those.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        # Same image as docker-compose, so CI cannot pass on a different
+        # pgvector version than the one developed against.
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: fishly
+          POSTGRES_PASSWORD: fishly
+          POSTGRES_DB: fishly
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+
+    env:
+      DATABASE_URL: postgresql://fishly:fishly@localhost:5432/fishly
+      REDIS_URL: redis://localhost:6379/0
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (CPU torch only)
+        run: |
+          # The CPU wheel index keeps the install at ~200MB instead of ~2.5GB.
+          # No GPU exists in CI and none is needed anywhere in this project.
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -e ".[dev]"
+
+      - name: Migrate
+        run: python scripts/migrate.py
+
+      - name: Run tests
+        # Integration tests skip themselves without a database; here there is
+        # one, so they run — including the tenant-leakage test, which is the
+        # single check that must never be skipped on a push.
+        run: pytest -q
+
+  eval:
+    runs-on: ubuntu-latest
+    needs: tests
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: fishly
+          POSTGRES_PASSWORD: fishly
+          POSTGRES_DB: fishly
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    env:
+      DATABASE_URL: postgresql://fishly:fishly@localhost:5432/fishly
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install (CPU torch only)
+        run: |
+          pip install --index-url https://download.pytorch.org/whl/cpu torch
+          pip install -e ".[dev]"
+
+      - name: Migrate and ingest
+        # The corpus is committed (ADR-008), so ingestion needs no API keys —
+        # the prose cache makes it reproducible from a clean clone.
+        run: |
+          python scripts/migrate.py
+          python scripts/ingest.py run
+
+      - name: Retrieval eval vs committed baseline
+        # Exits 1 on a >5% relative drop in recall@5 / recall@20 / MRR, or on
+        # ANY hard-assertion failure (ADR-022).
+        run: python -m fishnet.run --retrieval-only --arms hybrid,bm25,vector
+
+      - name: Upload scorecard
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fishnet-report
+          path: fishnet_reports/*.json
