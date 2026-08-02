@@ -44,8 +44,24 @@ class IngestionPipeline:
         self.embeddings = embeddings
         self.tokens = token_counter
 
+    def _get_chunker(self, source_type: str):
+        """Which chunker handles this source type.
+
+        A one-line extension point, added in Phase 4 so the chunking
+        experiment can substitute `NaiveChunker` by SUBCLASSING rather than by
+        adding a flag here. The production pipeline deliberately has no code
+        path that produces naive chunks — an `if self.naive:` branch in the
+        real ingester is a footgun that eventually fires in production.
+        """
+        return get_chunker(source_type, self.tokens)
+
     async def ingest_tenant(
-        self, raw_dir: Path, tenant_id: str, tenant_name: str, force: bool = False
+        self,
+        raw_dir: Path,
+        tenant_id: str,
+        tenant_name: str,
+        force: bool = False,
+        tenant_override: str | None = None,
     ) -> IngestionResult:
         """Ingest one tenant's whole corpus.
 
@@ -53,10 +69,26 @@ class IngestionPipeline:
         CHUNKING STRATEGY changed (the content hash is unchanged, but the
         chunks it produces are not). This is exactly the switch the Phase 4
         before/after chunking experiment needs.
+
+        `tenant_override` reads the corpus from `tenant_id`'s directory but
+        stores it under a different tenant. Phase 4 uses this to build the
+        naive-chunking shadow tenants (`acme_naive`) from acme's source files:
+        same input, different chunker, isolated by the same tenant mechanism
+        that protects real customers.
         """
         result = IngestionResult()
         documents = load_tenant_corpus(raw_dir, tenant_id)
         logger.info("[%s] loaded %d source documents", tenant_id, len(documents))
+
+        if tenant_override:
+            # Rewrite ownership after loading. The loader derives tenant from
+            # the directory tree, which is right for the real pipeline and
+            # wrong for a shadow ingest.
+            documents = [
+                document.model_copy(update={"tenant_id": tenant_override})
+                for document in documents
+            ]
+            tenant_id = tenant_override
 
         async with self.pool.acquire() as conn:
             await repository.ensure_tenant(conn, tenant_id, tenant_name)
@@ -93,7 +125,7 @@ class IngestionPipeline:
         # Chunk BEFORE opening the transaction: chunking is pure CPU and
         # embedding hits the network/model — holding a DB transaction open
         # across either would pin a connection for no reason.
-        chunker = get_chunker(document.source_type, self.tokens)
+        chunker = self._get_chunker(document.source_type)
         chunks = chunker.chunk(document)
         if not chunks:
             logger.warning("no chunks produced for %s", document.source_path)
