@@ -69,6 +69,33 @@ test-unit:
 test-isolation:
 	pytest -q tests/test_tenant_isolation.py tests/test_tenant_scope.py
 
-# Phase 4 will wire this to the real harness: python -m fishnet.run
+# Full eval: retrieval metrics + LLM-as-judge + hard assertions, compared
+# against the committed baseline. Exit code 1 on a regression.
 eval:
-	@echo "fishnet eval harness arrives in Phase 4 (python -m fishnet.run)"
+	python -m fishnet.run
+
+# Retrieval metrics only — no LLM calls, so it runs regardless of quota and
+# finishes in seconds. This is the one to run while iterating on retrieval.
+eval-retrieval:
+	python -m fishnet.run --retrieval-only --arms hybrid,bm25,vector
+
+# Ten cases, full pipeline. The development loop.
+eval-smoke:
+	python -m fishnet.run --sample 10
+
+# Regenerate the golden set from the corpus spec (prompts before overwriting).
+golden:
+	python scripts/build_golden_set.py
+
+# Record the current scorecard as the committed baseline. Review the diff.
+baseline:
+	python -m fishnet.run --write-baseline
+
+# The naive-vs-per-source chunking experiment (Design.md §4).
+chunking-experiment:
+	python scripts/chunking_experiment.py ingest
+	python scripts/chunking_experiment.py compare
+
+# Sweep the confidence gate against the golden set. No LLM calls.
+tune:
+	python scripts/tune_thresholds.py
