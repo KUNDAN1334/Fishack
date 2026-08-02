@@ -157,6 +157,14 @@ class RetrievalService:
         result.rerank = decision
 
         if decision.reranked and self.reranker is not None:
+            # Only the top slice of the fused list reaches the cross-encoder.
+            # Reranking cost is linear in pairs and measured at ~270ms/pair on
+            # a laptop CPU, so this is the difference between a usable
+            # time-to-first-token and an unusable one. Retrieval is unaffected
+            # — `result.candidates` still holds the full fused list, which is
+            # what Phase 4's recall@20 is computed over.
+            rerank_input = candidates[: settings.rerank_input_top_k]
+
             # Reranking is CPU-bound and synchronous (a torch forward pass).
             # Running it directly in the event loop would block every other
             # request for its whole duration, so it goes to a thread.
@@ -168,12 +176,13 @@ class RetrievalService:
                 rerank_candidates,
                 self.reranker,
                 query,
-                candidates,
+                rerank_input,
                 top_k=top_k,
                 max_length=settings.reranker_max_length,
             )
             result.results = reranked
             result.rerank_ms = rerank_ms
+            result.reranked_candidates = len(rerank_input)
         else:
             # No rerank: fusion order is the final order.
             result.results = candidates[:top_k]

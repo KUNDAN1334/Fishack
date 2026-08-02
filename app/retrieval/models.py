@@ -60,6 +60,26 @@ class RetrievedChunk(BaseModel):
         the model notices two dates."""
         return "conflicts_with_entry" in self.metadata
 
+    @property
+    def body(self) -> str:
+        """Content with the heading-path prefix stripped.
+
+        ADR-004 prepends the heading path into `content` so its terms reach
+        both the tsvector and the embedding. That prefix has done its job by
+        the time a chunk is retrieved: the prompt shows the heading in the
+        source's header line, and the UI shows it as a separate field, so
+        leaving it in the body would repeat it — wasting tokens on every
+        source in every prompt, and reading like a stutter in the citation
+        panel.
+
+        Mirrors `ProtoChunk.body` on the ingestion side deliberately. The two
+        must strip identically, or what the model is shown drifts from what
+        was indexed.
+        """
+        if self.heading_path and self.content.startswith(self.heading_path):
+            return self.content[len(self.heading_path):].lstrip("\n")
+        return self.content
+
 
 class ScoredChunk(BaseModel):
     """A chunk plus every score and rank it accumulated on its way through
@@ -166,6 +186,11 @@ class RetrievalResult(BaseModel):
 
     legs: list[LegResult] = Field(default_factory=list)
     rerank: RerankDecision | None = None
+    # How many candidates actually reached the cross-encoder. Less than
+    # len(candidates) by design (settings.rerank_input_top_k) — recorded so a
+    # trace shows whether a missing chunk was never retrieved or merely never
+    # reranked. Those have completely different fixes.
+    reranked_candidates: int = 0
 
     # Per-stage timings -> traces.retrieval_ms / rerank_ms (Design.md §12).
     embed_ms: int = 0

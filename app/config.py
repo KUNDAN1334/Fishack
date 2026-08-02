@@ -116,6 +116,30 @@ class Settings(BaseSettings):
     # it costs tokens, latency, and "needle in a haystack" dilution (§4).
     rerank_top_k: int = 5
 
+    # How many fused candidates actually reach the cross-encoder.
+    #
+    # MEASURED: bge-reranker-base scores 20 pairs in ~5.4s on a 12-thread CPU.
+    # That sits BEFORE the first streamed token, against Design.md's P95 < 3s
+    # target — the single worst number in the pipeline.
+    #
+    # Reranking cost is linear in pairs, so this is the cheapest lever we
+    # have. 8 instead of 20 is ~2.5x faster and still gives the cross-encoder
+    # a real choice (it emits 5). Crucially it does NOT reduce what we
+    # retrieve: RRF still produces `retrieval_fusion_top_k` candidates, so
+    # Phase 4's recall@20 measures the same 20 chunks it always did. Only the
+    # expensive second stage is narrowed.
+    #
+    # The risk this accepts, stated plainly: a chunk that fusion ranked 9th
+    # and the cross-encoder would have promoted to 1st is now unreachable.
+    # Phase 4 quantifies it by sweeping this value — if recall@5 barely moves
+    # between 8 and 20, the latency was free.
+    #
+    # PRODUCTION NOTE: with a hosted reranker (Cohere) or a GPU this knob
+    # would sit at 20+ and nobody would think about it. It exists because we
+    # are reranking on a laptop CPU, which is exactly the kind of constraint
+    # that produces real architecture decisions.
+    rerank_input_top_k: int = 8
+
     # RRF constant from Cormack et al. 2009 ("Reciprocal Rank Fusion
     # Outperforms Condorcet"). k damps the gap between adjacent ranks:
     # at k=60, rank 1 scores 1/61 and rank 2 scores 1/62 — nearly equal, so
@@ -187,6 +211,70 @@ class Settings(BaseSettings):
     # the alternative is to gate on the top RAW leg scores instead — at the
     # cost of the cross-query comparability that made fused scores attractive.
     rerank_margin_threshold: float = 0.10
+
+    # ------------------------------------------------ confidence gate (§7.5) --
+    # Design.md §7 technique 5: "retrieval confidence threshold BEFORE
+    # generation — don't even call the LLM if retrieval score too low,
+    # directly abstain (saves cost too!)". This is the single most important
+    # anti-hallucination control in the system, because it is the only one
+    # that works by NOT running the model.
+    #
+    # The threshold applies to ScoredChunk.final_score — the reranker's
+    # sigmoid score when reranking ran, the RRF score when it did not. Those
+    # live on wildly different scales, so there are two thresholds, not one.
+    # Using a single number would mean it was calibrated for at most one of
+    # them; interview_prep Q covers why that matters.
+    #
+    # 0.45 on the reranker's 0-1 scale: bge-reranker logits cluster hard, and
+    # a sigmoid below ~0.45 in practice means "topically adjacent but does not
+    # answer this". PROVISIONAL — Phase 4's tuning script sweeps it against
+    # the golden set's must-abstain cases. Documented as a guess, because it
+    # is one.
+    confidence_threshold_rerank: float = 0.45
+    # RRF scores are ~1/61 ≈ 0.0164 for a single rank-1 hit and ~0.033 when
+    # both legs agree at rank 1. 0.015 therefore means "at least one leg found
+    # something in its top few". Only used when the reranker did not run.
+    confidence_threshold_fused: float = 0.015
+
+    # ----------------------------------------------------- query rewriting --
+    # Design.md §2 step 2. Skipped entirely on the first turn: a question with
+    # no conversation behind it is already standalone, so rewriting it can
+    # only paraphrase, at the cost of an LLM call and its latency.
+    query_rewrite_enabled: bool = True
+    # How many prior turns to feed the rewriter. 6 = three exchanges, enough
+    # for "what about the retry logic?" to resolve, short enough to stay cheap
+    # and to keep the model focused on recent context.
+    query_rewrite_history_turns: int = 6
+    # Rewrites are short by construction; a long output means the model
+    # started answering instead of rewriting, which the rewriter rejects.
+    query_rewrite_max_tokens: int = 120
+
+    # ------------------------------------------------- citation validation --
+    # Design.md §7: "verify the cited chunk actually contains semantically
+    # similar content to catch fake citations."
+    citation_validation_enabled: bool = True
+    # Cosine similarity between a claim and its cited chunk, using the same
+    # bge-small encoder as retrieval. 0.5 is deliberately lenient: we are
+    # catching citations that point at something UNRELATED, not grading
+    # paraphrase quality. A strict threshold would flag correct citations
+    # whose wording differs from the answer's, which trains you to ignore the
+    # report — the worst outcome for a trust feature.
+    citation_similarity_threshold: float = 0.50
+    # PRODUCTION NOTE: similarity answers "is this on topic", not "does this
+    # entail the claim" — it cannot catch a citation that says the OPPOSITE.
+    # A real system runs an NLI/entailment model here (or an LLM judge).
+    # Design.md §13a lists entailment as its own hallucination signal for
+    # exactly this reason.
+
+    # ------------------------------------------------------------ answers --
+    # The exact abstention sentence from Design.md §7 rule 2. It is a constant
+    # because three separate things must agree on it: the prompt tells the
+    # model to emit it verbatim, the generator detects it to set action=
+    # 'abstained', and Phase 4's hard assertions check for it.
+    abstention_message: str = (
+        "I don't have enough information to answer this confidently. "
+        "I'm escalating this to a human agent."
+    )
 
     @property
     def provider_order(self) -> list[str]:
