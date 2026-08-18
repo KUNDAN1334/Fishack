@@ -56,6 +56,18 @@ chat:
 show-prompt:
 	python scripts/chat_playground.py --tenant acme --show-prompt --query "webhook retry limit"
 
+# Classify thumbs-down feedback into retrieval / generation / stale-data
+triage:
+	python scripts/triage_feedback.py
+
+# Turn thumbs-up answers into golden-set candidates for review
+golden-candidates:
+	python scripts/triage_feedback.py --golden-candidates
+
+# Operational metrics (needs the API running: make api)
+stats:
+	curl -s http://localhost:8000/admin/stats | python -m json.tool
+
 test:
 	pytest -q
 
@@ -74,10 +86,17 @@ test-isolation:
 eval:
 	python -m fishnet.run
 
-# Retrieval metrics only — no LLM calls, so it runs regardless of quota and
-# finishes in seconds. This is the one to run while iterating on retrieval.
+# Retrieval metrics only — no LLM calls, no cross-encoder, so it runs
+# regardless of quota and finishes in under a minute. This is the one to run
+# while iterating on retrieval, and it produces the BM25-vs-vector-vs-hybrid
+# comparison table.
 eval-retrieval:
 	python -m fishnet.run --retrieval-only --arms hybrid,bm25,vector
+
+# The with/without-reranker axis (Design.md §6). Slow — the cross-encoder is
+# ~5s per case on CPU — so it is a separate target you run deliberately.
+eval-rerank:
+	python -m fishnet.run --retrieval-only --arms hybrid,hybrid+rerank
 
 # Ten cases, full pipeline. The development loop.
 eval-smoke:
