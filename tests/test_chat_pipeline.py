@@ -405,3 +405,160 @@ async def test_first_turn_skips_rewriting_entirely(recorded):
 
     assert llm.complete_calls == 0
     assert retrieval.last_query == "retry limit?"
+
+
+# ============================================================== caching ==
+# Phase 5. The cache changes what the pipeline DOES, so it needs its own hard
+# assertions — chiefly that it never caches a refusal and never lets one
+# tenant's answer reach another.
+
+import fakeredis.aioredis  # noqa: E402
+
+from app.cache.store import AnswerCache  # noqa: E402
+
+
+def build_cached_pipeline(*, retrieval, llm, cache=None, settings=None) -> ChatPipeline:
+    pipeline = build_pipeline(retrieval=retrieval, llm=llm, settings=settings)
+    pipeline.cache = cache or AnswerCache(
+        fakeredis.aioredis.FakeRedis(), ttl_seconds=60, semantic_threshold=0.95
+    )
+    return pipeline
+
+
+async def test_second_identical_question_is_served_from_cache(recorded):
+    """The whole point (Design.md §9): a hit skips retrieval, reranking AND
+    generation — the entire expensive part of the request."""
+    retrieval = StubRetrieval([scored()])
+    llm = StubLLM("Retries cap at five attempts [1].")
+    pipeline = build_cached_pipeline(retrieval=retrieval, llm=llm)
+
+    first = await pipeline.answer(ChatRequest(tenant_id="acme", query="retry limit?"))
+    second = await pipeline.answer(ChatRequest(tenant_id="acme", query="retry limit?"))
+
+    assert first.cache_status == "miss"
+    assert second.cache_status == "exact_hit"
+    assert second.action == "cache_hit"
+    assert second.answer == first.answer
+    assert llm.stream_calls == 1, "a cache hit must not call the model"
+    assert retrieval.calls == 1, "a cache hit must not retrieve"
+
+
+async def test_a_cache_hit_reports_zero_cost_not_the_original(recorded):
+    """Replaying the original spend would make /stats describe a request that
+    never happened — and inflate cost-per-query exactly when caching is
+    working, which is the metric Design.md §9 exists to improve."""
+    pipeline = build_cached_pipeline(retrieval=StubRetrieval([scored()]), llm=StubLLM())
+
+    await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+    second = await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+
+    assert second.tokens_in == 0 and second.tokens_out == 0
+    assert second.virtual_cost_usd == 0.0
+    # Provider/model describe who wrote it originally — useful for debugging.
+    assert second.provider == "stub"
+
+
+async def test_abstentions_are_never_cached(recorded):
+    """HARD ASSERTION. 'I don't have enough information' is a statement about
+    the corpus AT ONE MOMENT. Cache it and the refusal survives for an hour
+    after someone adds the missing docs — the system would actively decline to
+    use content it now has."""
+    empty = StubRetrieval([])
+    pipeline = build_cached_pipeline(retrieval=empty, llm=StubLLM())
+
+    first = await pipeline.answer(ChatRequest(tenant_id="acme", query="out of scope?"))
+    assert first.action == "escalated"
+
+    # Now the corpus gains the answer.
+    pipeline.retrieval = StubRetrieval([scored()])
+    second = await pipeline.answer(ChatRequest(tenant_id="acme", query="out of scope?"))
+
+    assert second.cache_status == "miss", "a refusal must never be cached"
+    assert second.action == "answered"
+
+
+async def test_the_cache_is_tenant_isolated_through_the_pipeline(recorded):
+    """HARD ASSERTION. Phase 2 made cross-tenant reads impossible in SQL;
+    serving one from Redis would walk around all of it."""
+    shared = fakeredis.aioredis.FakeRedis()
+    acme = build_cached_pipeline(
+        retrieval=StubRetrieval([scored()]), llm=StubLLM("ACME ONLY ANSWER [1]."),
+        cache=AnswerCache(shared, ttl_seconds=60),
+    )
+    globex_llm = StubLLM("GLOBEX ANSWER [1].")
+    globex = build_cached_pipeline(
+        retrieval=StubRetrieval([scored()]), llm=globex_llm,
+        cache=AnswerCache(shared, ttl_seconds=60),
+    )
+
+    await acme.answer(ChatRequest(tenant_id="acme", query="same question"))
+    result = await globex.answer(ChatRequest(tenant_id="globex", query="same question"))
+
+    assert result.cache_status == "miss"
+    assert "ACME ONLY" not in result.answer
+    assert globex_llm.stream_calls == 1, "globex must generate its own answer"
+
+
+async def test_the_cache_key_uses_the_rewritten_query(recorded):
+    """A follow-up ('what about the backoff?') is meaningless as a cache key —
+    the same four words mean different things in different conversations. The
+    REWRITTEN query is standalone by construction, which is what a key needs
+    to be."""
+    llm = StubLLM(rewrite="What is the webhook backoff schedule?")
+    pipeline = build_cached_pipeline(retrieval=StubRetrieval([scored()]), llm=llm)
+    history = [Turn(role="user", content="webhooks?")]
+
+    await pipeline.answer(
+        ChatRequest(tenant_id="acme", query="what about the backoff?", messages=history)
+    )
+
+    # The standalone form hits; the raw follow-up does not.
+    assert await pipeline.cache.get_exact("acme", "What is the webhook backoff schedule?")
+    assert await pipeline.cache.get_exact("acme", "what about the backoff?") is None
+
+
+async def test_cache_status_reaches_the_trace(recorded):
+    """/stats computes cache hit rate from this column, so it has to be right
+    on both paths."""
+    pipeline = build_cached_pipeline(retrieval=StubRetrieval([scored()]), llm=StubLLM())
+
+    await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+    await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+
+    assert [t.cache_status for t in recorded["traces"]] == ["miss", "exact_hit"]
+
+
+async def test_a_cache_hit_emits_the_same_event_shape(recorded):
+    """The client must not have to branch on whether an answer was cached —
+    same meta, delta, final sequence either way."""
+    pipeline = build_cached_pipeline(retrieval=StubRetrieval([scored()]), llm=StubLLM())
+    await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+
+    events = await collect(pipeline, ChatRequest(tenant_id="acme", query="q"))
+    assert [e.type for e in events] == ["meta", "delta", "final"]
+    assert events[0].data["cache_status"] == "exact_hit"
+
+
+async def test_invalidation_makes_the_next_request_regenerate(recorded):
+    """The full Design.md §9 loop: a document changes, ingestion invalidates,
+    the next request regenerates instead of serving the stale answer."""
+    llm = StubLLM("OLD ANSWER [1].")
+    pipeline = build_cached_pipeline(retrieval=StubRetrieval([scored("c1")]), llm=llm)
+
+    await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+    assert (await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))).cache_status == "exact_hit"
+
+    await pipeline.cache.invalidate_chunks("acme", ["c1"])
+
+    third = await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+    assert third.cache_status == "miss"
+    assert llm.stream_calls == 2
+
+
+async def test_a_pipeline_without_a_cache_still_works(recorded):
+    """The eval harness runs cacheless on purpose — a cached answer would make
+    it score a previous run's output rather than this one's."""
+    pipeline = build_pipeline(retrieval=StubRetrieval([scored()]), llm=StubLLM())
+    assert pipeline.cache is None
+    result = await pipeline.answer(ChatRequest(tenant_id="acme", query="q"))
+    assert result.cache_status == "miss" and result.action == "answered"
