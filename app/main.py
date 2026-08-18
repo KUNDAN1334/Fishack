@@ -20,7 +20,10 @@ from contextlib import asynccontextmanager
 import redis.asyncio as aioredis
 from fastapi import FastAPI, Request
 
+from app.api.routes_admin import router as admin_router
 from app.api.routes_chat import router as chat_router
+from app.api.routes_feedback import router as feedback_router
+from app.cache.store import AnswerCache
 from app.config import get_settings
 from app.db.engine import check_database, create_pool
 from app.embeddings.encoder import get_encoder
@@ -59,8 +62,18 @@ async def lifespan(app: FastAPI):
     app.state.embeddings = EmbeddingService(app.state.db_pool, encoder)
     app.state.retrieval = build_retrieval_service(app.state.embeddings, settings)
 
+    app.state.cache = AnswerCache(
+        app.state.redis,
+        ttl_seconds=settings.cache_ttl_seconds,
+        semantic_enabled=settings.semantic_cache_enabled,
+        semantic_threshold=settings.semantic_cache_threshold,
+        semantic_max_candidates=settings.semantic_cache_max_candidates,
+        enabled=settings.cache_enabled,
+    )
+
     app.state.chat_pipeline = ChatPipeline(
         pool=app.state.db_pool,
+        cache=app.state.cache,
         retrieval=app.state.retrieval,
         rewriter=QueryRewriter(
             app.state.llm,
@@ -91,8 +104,10 @@ async def lifespan(app: FastAPI):
     await app.state.redis.aclose()
 
 
-app = FastAPI(title="Fishly", version="0.3.0", lifespan=lifespan)
+app = FastAPI(title="Fishly", version="0.5.0", lifespan=lifespan)
 app.include_router(chat_router)
+app.include_router(feedback_router)
+app.include_router(admin_router)
 
 
 @app.get("/health")
