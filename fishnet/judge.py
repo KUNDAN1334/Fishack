@@ -20,7 +20,7 @@ named criteria, a 0-1 scale per criterion, and stated anchor points is
 reproducible enough to diff across runs — and, more importantly, is
 inspectable. When a score looks wrong you can read the rubric and see whether
 the judge or the rubric was at fault. The prompt lives here as a module
-constant and is reproduced in `docs/evals.md`.
+constant, in one place, so there is no second copy to drift out of sync.
 
 WHAT LLM-AS-JUDGE IS NOT. It is a noisy estimator, not a measurement. The
 same answer can score differently on consecutive judgements, which is exactly
@@ -41,8 +41,8 @@ from fishnet.models import JudgeScores
 
 logger = logging.getLogger(__name__)
 
-# The rubric. Reproduced verbatim in docs/evals.md — if you edit one, edit
-# both, because a scorecard whose rubric is undocumented cannot be argued with.
+# The rubric, verbatim and in exactly one place. A scorecard whose rubric is
+# hidden cannot be argued with, so this constant IS the documentation.
 JUDGE_SYSTEM_PROMPT = """You are evaluating a customer support assistant's answer. You are strict, literal, and you do not give credit for plausible-sounding text.
 
 You will be given:

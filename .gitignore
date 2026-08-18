@@ -30,3 +30,7 @@ fishnet_reports/
 
 # Cross-session working notes — not project content
 HANDOFF.md
+
+# Personal study material: walkthroughs, interview prep, rebuild exercises.
+# Kept on disk deliberately - useful to me, not part of the shipped project.
+docs/

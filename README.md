@@ -9,8 +9,7 @@ A multi-tenant RAG customer support assistant for "Flowlytics", a fictional B2B 
 ## Demo
 
 <!-- DEMO GIF PLACEHOLDER
-     Record with: docs/demo.md (10-minute script, exact queries and order)
-     Frames worth capturing:
+     Frames worth capturing, in order:
        1. sources panel populating BEFORE the first token
        2. the planted stale-data conflict — two sources, one flagged "superseded in part"
        3. an out-of-scope question abstaining with zero LLM calls
@@ -18,9 +17,9 @@ A multi-tenant RAG customer support assistant for "Flowlytics", a fictional B2B 
        5. /admin — latency per stage, cost per query, cache hit rate
 -->
 
-> **GIF not recorded yet.** `docs/demo.md` is the script in the meantime — a
-> ten-minute walkthrough with the exact queries, in order, and what each screen
-> is proving. Drop `docs/demo.gif` in and replace this block.
+> **GIF not recorded yet.** The five queries under [Try it](#try-it) walk the
+> same path in about three minutes, and each one is labelled with what it is
+> proving. Drop `demo.gif` in and replace this block.
 
 ---
 
@@ -85,8 +84,8 @@ flowchart TB
 Backed by construction-time guards, a runtime tripwire, a source-lint test, and
 a CI leakage test with controls that stop it passing vacuously.
 
-Diagrams per phase, storage layout and every knob's provenance:
-**[`docs/architecture.md`](docs/architecture.md)**.
+Every threshold and knob carries its provenance in a comment where it is
+defined — `app/config.py` is the single place they all live.
 
 ---
 
@@ -150,7 +149,7 @@ resolution and strips the heading context that tells a chunk what it is about.
 > section in the smart arm. A larger expected set *depresses* recall and
 > *inflates* precision and MRR for the naive arm. So the recall gap is somewhat
 > overstated and the MRR gap understated. `hit@5` is immune to this and is now
-> the experiment's headline metric — see `docs/lessons.md` #16.
+> the experiment's headline metric.
 
 ### Latency and cost
 
@@ -172,17 +171,17 @@ Cost is tracked as **virtual cost** — what the same token usage *would* cost a
 paid-API prices, since actual spend on free tiers is $0. Methodology and the
 price table are in `app/config.py`; live figures are on `/admin`.
 
-Full harness documentation, how to read a scorecard, and how to add cases:
-**[`docs/evals.md`](docs/evals.md)**.
+The harness lives in `fishnet/`. `fishnet/run.py` is the entry point and every
+metric in `fishnet/metrics.py` is a pure function with the formula in its
+docstring, so a scorecard can be checked by hand.
 
 ---
 
 ## Interesting problems I hit
 
-Twenty-one of them are written up in **[`docs/lessons.md`](docs/lessons.md)** —
-each as *what I expected → what happened → why → the lesson*, in plain
-language. The common thread: **the dangerous failures are the silent ones.**
-None of these crashed. The full test suite was green the entire time.
+Seven of them, each as *what I expected → what happened → why*. The common
+thread: **the dangerous failures are the silent ones.** None of these crashed.
+The full test suite was green the entire time.
 
 **1. My keyword search returned zero rows, and nothing complained.**
 Every convenient Postgres helper — `plainto_tsquery`, `websearch_to_tsquery` —
@@ -273,9 +272,11 @@ with `python scripts/generate_corpus.py` if you want to.
 
 </details>
 
-Deploying it somewhere? **[`docs/deployment.md`](docs/deployment.md)** — the
-memory maths that decides your hosting, a free-tier stack that works, and the
-one endpoint you must protect before making it public.
+Deploying it somewhere? The whole stack runs free on Neon (Postgres +
+pgvector), Upstash (Redis), a Docker host for the API and Vercel for the UI.
+Budget ~1.5 GB of RAM with the reranker loaded, or set `RERANKER_ENABLED=false`
+and drop to ~700 MB. **Set `ADMIN_TOKEN` before exposing it** — `/admin/stats`
+is the one endpoint that reads across tenants.
 
 <details>
 <summary>Local development without Docker</summary>
@@ -301,7 +302,8 @@ cd frontend && npm install && npm run dev           # terminal 2
 | *ask the same question twice* | the cache: `⚡ cached`, and total time drops to ~10 ms |
 | *switch tenant, ask again* | isolation — different private documents, no leakage |
 
-`docs/demo.md` is the full ten-minute script.
+Run them in that order — each one turns on a defence the previous one didn't
+need.
 
 ---
 
@@ -321,21 +323,22 @@ cd frontend && npm install && npm run dev           # terminal 2
 
 ---
 
-## Docs
+## Reading the code
 
-| file | contents |
+There is no separate design document to keep in sync — the reasoning lives next
+to the code it explains. Every module opens with a docstring saying why it
+exists, and comments answer *why*, not *what*. A good order, bottom up:
+
+| start here | because |
 |---|---|
-| **[`docs/lessons.md`](docs/lessons.md)** | **21 things that broke, and what they taught — start here** |
 | [`Design.md`](Design.md) | the system design this implements |
-| [`docs/architecture.md`](docs/architecture.md) | diagrams per phase, storage layout, every knob's provenance |
-| [`docs/decisions.md`](docs/decisions.md) | 28 ADRs — every choice, alternatives, why rejected |
-| [`docs/evals.md`](docs/evals.md) | how the harness works, how to read a scorecard, how to add cases |
-| [`docs/interview_prep.md`](docs/interview_prep.md) | 36 questions with model answers |
-| [`docs/glossary.md`](docs/glossary.md) | every AI term used, in plain sentences |
-| [`docs/walkthroughs/`](docs/walkthroughs/) | per-phase build notes with file-by-file traces |
-| [`docs/demo.md`](docs/demo.md) | the ten-minute demo script |
-| [`docs/deployment.md`](docs/deployment.md) | running from scratch, and deploying end to end on free tiers |
-| [`docs/rebuild_exercises.md`](docs/rebuild_exercises.md) | seven core files to delete and re-implement |
+| `app/retrieval/tenant_scope.py` | the isolation core — the only place `FROM chunks` may appear |
+| `app/retrieval/bm25.py` | one line took three versions; the comment explains all three |
+| `app/retrieval/fusion.py` | RRF as ~40 lines of pure function, fully unit-tested |
+| `app/generation/pipeline.py` | the whole query path in one readable sequence |
+| `app/generation/citations.py` | post-hoc validation, and an honest note on what it cannot catch |
+| `app/cache/keys.py` | why identifier queries are banned from the semantic cache |
+| `fishnet/run.py` | the eval harness entry point |
 
 ## Stack
 

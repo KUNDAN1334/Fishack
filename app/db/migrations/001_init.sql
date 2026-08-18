@@ -84,8 +84,8 @@ CREATE INDEX chunks_tsv_idx ON chunks USING GIN (tsv);
 --   4. Dedicated vector DBs (Pinecone/Qdrant) implement native filtered
 --      HNSW, which is exactly why namespaces are first-class there.
 -- At our scale (2 tenants, ~1-2k chunks) ef_search covers it; the
--- retrieval layer (Phase 2) sets it per-query. Full discussion in
--- docs/interview_prep.md.
+-- retrieval layer (Phase 2) sets it per-query. See the ef_search comment in
+-- app/retrieval/vector.py for the filtered-ANN reasoning behind that number.
 CREATE INDEX chunks_hnsw_idx ON chunks USING hnsw (embedding vector_cosine_ops);
 
 -- Embeddings are deterministic: same model + same text => same vector.
