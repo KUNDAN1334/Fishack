@@ -1,0 +1,44 @@
+# Line endings, normalised once so they stop being a source of phantom diffs.
+#
+# Symptom this fixes: ~200 files under data/ showed as fully rewritten in
+# `git status` while `git diff -w` showed nothing at all. Every line had gained
+# a CR. On Windows, without this file and without core.autocrlf set, whatever
+# tool last wrote those files decided the line ending, and git faithfully
+# recorded the churn.
+#
+# `text=auto eol=lf` means: git decides what is text, stores LF in the index,
+# and checks out LF. One canonical form in history, on every machine.
+#
+# The explicit `binary` lines are not redundant — `text=auto` guesses, and a
+# wrong guess on a binary file corrupts it rather than merely annoying you.
+
+* text=auto eol=lf
+
+# Shell scripts must be LF even on Windows, or bash refuses them inside Docker.
+*.sh text eol=lf
+*.bash text eol=lf
+Makefile text eol=lf
+Dockerfile text eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Never touch these.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pdf binary
+*.zip binary
+*.gz binary
+*.exe binary
+*.dll binary
+*.so binary
+*.dylib binary
+*.pyd binary
+*.safetensors binary
+*.bin binary
+*.onnx binary
