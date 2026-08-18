@@ -66,18 +66,38 @@ class NaiveChunker(Chunker):
                 chunk_index=index,
                 content=window,
                 token_count=self.tokens.count(window),
-                # No heading path — the naive chunker does not know what a
-                # heading is. This absence is the experiment's whole subject.
+                # No heading path — the naive chunker does not parse headings.
+                # This absence IS the experiment's subject.
                 heading_path=None,
-                # Only what is available without parsing the document: the
-                # source type and the doc version. No entry_id, no ticket_id,
-                # no error_code, no product_area — which is why the golden
-                # set's locators cannot resolve against a naive corpus by
-                # metadata and fall back to source_path matching.
+                # DOCUMENT-level metadata is carried, chunk-level is not.
+                #
+                # This distinction took a broken experiment to get right. The
+                # first version carried almost nothing, so ticket and changelog
+                # locators could not resolve against the naive corpus at all —
+                # only 8 of 41 cases scored, and the "comparison" was 8 cases
+                # against 41. Not a comparison.
+                #
+                # The fix is not a hack, it is the correct model of the
+                # baseline: a naive chunker is naive about SPLITTING, not
+                # about PROVENANCE. Any real first-attempt pipeline still
+                # knows which ticket a chunk came from — that comes from the
+                # loader, not from parsing structure. Withholding it would
+                # make the baseline a strawman and would confound "worse
+                # chunking" with "worse metadata".
+                #
+                # What it still cannot have: heading_path, and anything that
+                # requires understanding the document's internal structure.
                 metadata={
                     "source_type": document.source_type,
                     "doc_version": document.doc_version,
+                    "product_area": document.product_area,
                     "chunking": "naive_fixed",
+                    **{
+                        key: value
+                        for key, value in document.extra.items()
+                        if key in ("ticket_id", "entry_id", "error_code",
+                                   "resolution_tag", "version", "kind")
+                    },
                 },
             )
             for index, window in enumerate(windows)

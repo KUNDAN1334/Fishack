@@ -69,7 +69,11 @@ GOLDEN = ROOT / "data" / "golden" / "golden_set.jsonl"
 
 SHADOW_SUFFIX = "_naive"
 BASE_TENANTS = ("acme", "globex")
-METRICS = ["recall@5", "recall@20", "precision@5", "mrr"]
+# hit@5 first, deliberately. It is the only metric in this comparison that is
+# immune to the expected-set asymmetry between the two arms (see the note
+# printed under the table), and it is the question a RAG system actually cares
+# about: did any correct chunk reach the model?
+METRICS = ["hit@5", "recall@5", "recall@20", "precision@5", "mrr"]
 
 
 def shadow(tenant: str) -> str:
@@ -149,6 +153,11 @@ async def cmd_compare(args, pool: asyncpg.Pool) -> int:
     service = build_retrieval_service(embeddings, settings, with_reranker=not args.no_rerank)
 
     arms: dict[str, dict[str, dict[str, float]]] = {}
+    # Which cases each arm could actually score. The two sets must match, or
+    # the "comparison" is between different question sets — see the guard
+    # below. The first version of this script scored 8 cases in one arm and 41
+    # in the other and printed a delta anyway.
+    scored_ids: dict[str, set[str]] = {}
 
     for arm, suffix in (("smart (per-source)", ""), ("naive (fixed-size)", SHADOW_SUFFIX)):
         # Rewrite each case onto the arm's tenant, then resolve locators
@@ -172,6 +181,7 @@ async def cmd_compare(args, pool: asyncpg.Pool) -> int:
             per_case.append((item.case.case_type, case_metrics(ordered, item.expected_chunk_ids)))
 
         arms[arm] = summarize(per_case)
+        scored_ids[arm] = {item.case.case_id.replace(suffix, "") for item in usable}
         print(f"  {arm}: scored {len(usable)}/{len(arm_cases)} cases "
               f"({len(warnings)} with unresolved locators)")
 
@@ -179,16 +189,42 @@ async def cmd_compare(args, pool: asyncpg.Pool) -> int:
         print("\nNeed both arms. Run: python scripts/chunking_experiment.py ingest")
         return 1
 
-    print_table(arms)
+    # THE GUARD. An arm that could only score some of the cases is not
+    # comparable to one that scored all of them, and printing a delta anyway
+    # produces a number that looks authoritative and means nothing. This is
+    # the same class of mistake as averaging different retrieval strategies
+    # into one row — a comparison must first verify it is comparing the same
+    # things.
+    smart_ids, naive_ids = scored_ids["smart (per-source)"], scored_ids["naive (fixed-size)"]
+    if smart_ids != naive_ids:
+        only_smart = sorted(smart_ids - naive_ids)
+        only_naive = sorted(naive_ids - smart_ids)
+        print("\n" + "=" * 96)
+        print("REFUSING TO PRINT A COMPARISON — the arms scored different case sets")
+        print("=" * 96)
+        print(f"  smart scored {len(smart_ids)} cases, naive scored {len(naive_ids)}")
+        if only_smart:
+            print(f"  only smart could score: {only_smart[:10]}"
+                  + (f" (+{len(only_smart) - 10} more)" if len(only_smart) > 10 else ""))
+        if only_naive:
+            print(f"  only naive could score: {only_naive[:10]}")
+        print("\n  Usually this means the naive corpus lacks metadata the locators need.")
+        print("  Re-ingest it after any change to NaiveChunker:")
+        print("     python scripts/chunking_experiment.py clean")
+        print("     python scripts/chunking_experiment.py ingest")
+        print("=" * 96)
+        return 1
+
+    print_table(arms, len(smart_ids))
     return 0
 
 
-def print_table(arms: dict[str, dict[str, dict[str, float]]]) -> None:
+def print_table(arms: dict[str, dict[str, dict[str, float]]], case_count: int) -> None:
     smart, naive = "smart (per-source)", "naive (fixed-size)"
     width = 96
 
     print("\n" + "=" * width)
-    print("CHUNKING EXPERIMENT — naive fixed-size vs per-source strategies")
+    print(f"CHUNKING EXPERIMENT — naive fixed-size vs per-source ({case_count} cases, both arms)")
     print("=" * width)
     header = f"{'case type':<20}" + "".join(f"{m:>13}" for m in METRICS)
     print(f"\n{header}")
@@ -212,9 +248,22 @@ def print_table(arms: dict[str, dict[str, dict[str, float]]]) -> None:
         print()
 
     print("=" * width)
-    print("Note: naive chunks carry no heading_path, so docs locators resolve to EVERY")
-    print("chunk of a page rather than one section. That inflates the naive arm's recall,")
-    print("making this delta a LOWER BOUND on the real improvement.")
+    print("READ hit@5 FIRST. It is the only metric here that is not distorted by the")
+    print("measurement asymmetry below.")
+    print("")
+    print("Naive chunks carry no heading_path, so a docs locator resolves to EVERY chunk")
+    print("of a page there, versus ONE section in the per-source arm. Bigger expected set:")
+    print("")
+    print("  recall@k     DEPRESSED for naive (bigger denominator, same 5 slots)")
+    print("               -> the recall delta OVERSTATES the improvement")
+    print("  precision@k  INFLATED for naive (more chunks count as correct)")
+    print("  MRR          INFLATED for naive (easier for some correct chunk to rank 1)")
+    print("               -> the MRR/precision deltas UNDERSTATE the improvement")
+    print("  hit@5        UNAFFECTED — 'did ANY correct chunk reach the top 5?' is")
+    print("               binary, so expected-set size cannot move it")
+    print("")
+    print("For a RAG system hit@5 is also the question that matters: did the answer")
+    print("reach the model at all?")
     print("=" * width)
 
 

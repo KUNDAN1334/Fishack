@@ -111,6 +111,36 @@ class LocatorResolver:
                     """,
                     tenant_id, locator.slug, locator.heading,
                 )
+                if not rows and locator.heading:
+                    # Fallback for corpora with no heading structure — the
+                    # naive-chunking arm of the Phase 4 experiment. Without
+                    # this, every heading-qualified locator resolves to
+                    # nothing there and the two arms end up scored on
+                    # different case sets, which is not a comparison.
+                    #
+                    # This deliberately WIDENS the naive arm's expected set to
+                    # the whole page, which INFLATES its recall. The measured
+                    # delta is therefore a lower bound on the real
+                    # improvement — reported in the experiment output rather
+                    # than quietly enjoyed.
+                    rows = await conn.fetch(
+                        """
+                        SELECT c.id
+                          FROM chunks c
+                          JOIN documents d ON d.id = c.document_id
+                         WHERE c.tenant_id = $1
+                           AND c.is_current = true
+                           AND d.source_type = 'docs'
+                           AND d.source_path LIKE '%' || $2 || '.md'
+                           AND c.heading_path IS NULL
+                        """,
+                        tenant_id, locator.slug,
+                    )
+                    if rows:
+                        logger.info(
+                            "locator %s resolved by page (no heading structure in tenant %s)",
+                            locator.describe(), tenant_id,
+                        )
             elif locator.source_type == "changelog":
                 rows = await conn.fetch(
                     """
