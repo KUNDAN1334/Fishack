@@ -33,9 +33,9 @@ jobs:
         # pgvector version than the one developed against.
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: fishly
-          POSTGRES_PASSWORD: fishly
-          POSTGRES_DB: fishly
+          POSTGRES_USER: fishack
+          POSTGRES_PASSWORD: fishack
+          POSTGRES_DB: fishack
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -47,7 +47,7 @@ jobs:
         ports: ["6379:6379"]
 
     env:
-      DATABASE_URL: postgresql://fishly:fishly@localhost:5432/fishly
+      DATABASE_URL: postgresql://fishack:fishack@localhost:5432/fishack
       REDIS_URL: redis://localhost:6379/0
 
     steps:
@@ -81,9 +81,9 @@ jobs:
       postgres:
         image: pgvector/pgvector:pg16
         env:
-          POSTGRES_USER: fishly
-          POSTGRES_PASSWORD: fishly
-          POSTGRES_DB: fishly
+          POSTGRES_USER: fishack
+          POSTGRES_PASSWORD: fishack
+          POSTGRES_DB: fishack
         ports: ["5432:5432"]
         options: >-
           --health-cmd pg_isready
@@ -92,7 +92,7 @@ jobs:
           --health-retries 5
 
     env:
-      DATABASE_URL: postgresql://fishly:fishly@localhost:5432/fishly
+      DATABASE_URL: postgresql://fishack:fishack@localhost:5432/fishack
 
     steps:
       - uses: actions/checkout@v4

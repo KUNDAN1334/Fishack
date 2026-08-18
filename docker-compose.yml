@@ -1,4 +1,4 @@
-# Fishly infrastructure — one command up: `docker compose up -d --build`
+# Fishack infrastructure — one command up: `docker compose up -d --build`
 #
 # PRODUCTION NOTE: in production these would be managed services (RDS +
 # pgvector or a dedicated vector DB, ElastiCache) with backups, replicas and
@@ -10,15 +10,15 @@ services:
     # one datastore (see ADR-001: why Postgres FTS instead of rank_bm25)
     image: pgvector/pgvector:pg16
     environment:
-      POSTGRES_USER: fishly
-      POSTGRES_PASSWORD: fishly
-      POSTGRES_DB: fishly
+      POSTGRES_USER: fishack
+      POSTGRES_PASSWORD: fishack
+      POSTGRES_DB: fishack
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U fishly -d fishly"]
+      test: ["CMD-SHELL", "pg_isready -U fishack -d fishack"]
       interval: 5s
       timeout: 3s
       retries: 10
@@ -39,7 +39,7 @@ services:
     environment:
       # Inside the compose network, service names are the hostnames —
       # override whatever localhost values .env has
-      DATABASE_URL: postgresql://fishly:fishly@postgres:5432/fishly
+      DATABASE_URL: postgresql://fishack:fishack@postgres:5432/fishack
       REDIS_URL: redis://redis:6379/0
       # Ollama runs on the host or in the optional profile below
       OLLAMA_BASE_URL: http://host.docker.internal:11434/v1
