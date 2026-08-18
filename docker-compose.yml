@@ -51,6 +51,24 @@ services:
       redis:
         condition: service_healthy
 
+  # Next.js chat UI + admin dashboard (Phase 6).
+  #
+  # Talks to the API only through Next's rewrite proxy (ADR-027), so the
+  # browser sees one origin and there is no CORS anywhere in the system.
+  # Inside this network the backend is `api`, not `localhost` — localhost in
+  # a container means the container itself.
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        API_ORIGIN: http://api:8000
+    environment:
+      API_ORIGIN: http://api:8000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+
   # Optional local LLM — start with: docker compose --profile ollama up -d
   # Then: docker compose exec ollama ollama pull llama3.1:8b
   # and set OLLAMA_ENABLED=true in .env

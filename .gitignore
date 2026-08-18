@@ -27,3 +27,6 @@ fishnet_reports/
 #                                    golden set has stable ground truth
 #   data/generation/.prose_cache/    LLM prose cache — committed so a fresh
 #                                    clone reproduces the corpus with no API key
+
+# Cross-session working notes — not project content
+HANDOFF.md
