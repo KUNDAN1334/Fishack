@@ -3,9 +3,9 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Fishly — grounded support answers",
+  title: "Fishack — grounded support answers",
   description:
-    "Fishly fishes out the exact answer from a sea of docs — every claim cited, verified and confidence-gated.",
+    "Fishack fishes out the exact answer from a sea of docs — every claim cited, verified and confidence-gated.",
 };
 
 /**
@@ -26,7 +26,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
             <Link href="/" className="flex items-baseline gap-2 group">
               <span className="text-xl">🎣</span>
               <span className="text-lg font-semibold text-slate-900 group-hover:text-ocean-600">
-                Fishly
+                Fishack
               </span>
             </Link>
             <p className="hidden lg:block text-xs text-slate-500 border-l border-slate-200 pl-4">

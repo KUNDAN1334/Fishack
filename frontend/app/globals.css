@@ -22,11 +22,11 @@ body {
 
 /* The blinking caret while the answer streams. Streaming exists to show
    progress; a static block of text arriving all at once wastes that. */
-@keyframes fishly-caret { 0%, 45% { opacity: 1 } 50%, 95% { opacity: 0 } 100% { opacity: 1 } }
+@keyframes fishack-caret { 0%, 45% { opacity: 1 } 50%, 95% { opacity: 0 } 100% { opacity: 1 } }
 .caret::after {
   content: "▌";
   @apply text-ocean-500 ml-0.5;
-  animation: fishly-caret 1.1s steps(1) infinite;
+  animation: fishack-caret 1.1s steps(1) infinite;
 }
 
 /* Thin scrollbars so the two panels don't fight for width. */

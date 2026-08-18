@@ -53,7 +53,7 @@ export function ConfidencePill({ gate }: { gate: GateDecision | null | undefined
 /* ------------------------------------------------------------ escalation -- */
 
 /**
- * Shown whenever Fishly declined to answer.
+ * Shown whenever Fishack declined to answer.
  *
  * Deliberately NOT styled as an error. Abstaining is the system working —
  * Design.md's whole thesis is that in B2B support a wrong answer costs more
