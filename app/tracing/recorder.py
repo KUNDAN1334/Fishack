@@ -109,9 +109,7 @@ async def record_trace(pool: asyncpg.Pool, response: ChatResponse) -> str | None
                 response.tokens_in,
                 response.tokens_out,
                 response.virtual_cost_usd,
-                # Phase 5 owns caching; until then every request is a miss,
-                # recorded explicitly so the column is never NULL-ambiguous.
-                "miss",
+                response.cache_status,
                 response.retrieval_ms,
                 response.rerank_ms,
                 response.generation_ms,

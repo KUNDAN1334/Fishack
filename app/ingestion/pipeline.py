@@ -39,10 +39,16 @@ class IngestionPipeline:
         pool: asyncpg.Pool,
         embeddings: EmbeddingService,
         token_counter: TokenCounter,
+        cache=None,
     ):
         self.pool = pool
         self.embeddings = embeddings
         self.tokens = token_counter
+        # Optional AnswerCache. When present, re-ingesting a document evicts
+        # every cached answer built on its chunks (ADR-025). None means
+        # ingestion runs without Redis — correct for tests and for a first
+        # load, where there is nothing cached to invalidate.
+        self.cache = cache
 
     def _get_chunker(self, source_type: str):
         """Which chunker handles this source type.
@@ -135,6 +141,13 @@ class IngestionPipeline:
         embeddings = await self.embeddings.embed_passages([chunk.content for chunk in chunks])
 
         async with self.pool.acquire() as conn:
+            # Chunk ids about to be REPLACED. Collected before the delete,
+            # because after it they are gone and the answer cache would have
+            # no way to know which cached answers are now stale (ADR-025).
+            stale_chunk_ids = await self._chunk_ids_for_source(
+                conn, document.tenant_id, document.source_path
+            )
+
             async with conn.transaction():
                 if existing:
                     # force=True path: same content, re-chunking. Replace in
@@ -152,7 +165,50 @@ class IngestionPipeline:
                 result.chunks_written = await repository.insert_chunks(
                     conn, document_id, document.tenant_id, chunks, chunk_hashes, embeddings
                 )
+
+        # AFTER the transaction commits, never inside it. If invalidation ran
+        # inside and the transaction then rolled back, we would have deleted
+        # cache entries for content that still exists — harmless (a few extra
+        # LLM calls) but confusing. The reverse is far worse: committing new
+        # content while stale answers survive in the cache. Hence: commit
+        # first, then invalidate.
+        result.cache_entries_invalidated = await self._invalidate_cache(
+            document.tenant_id, stale_chunk_ids
+        )
         return result
+
+    @staticmethod
+    async def _chunk_ids_for_source(conn, tenant_id: str, source_path: str) -> list[str]:
+        """Every chunk id currently serving this source path, current or not.
+
+        Archived chunks are included on purpose: an answer cached before a
+        supersession was built on chunks that are now `is_current=false`, and
+        that answer is exactly the stale one we need to evict.
+        """
+        rows = await conn.fetch(
+            """
+            SELECT c.id FROM chunks c
+              JOIN documents d ON d.id = c.document_id
+             WHERE c.tenant_id = $1 AND d.source_path = $2
+            """,
+            tenant_id, source_path,
+        )
+        return [str(row["id"]) for row in rows]
+
+    async def _invalidate_cache(self, tenant_id: str, chunk_ids: list[str]) -> int:
+        """Evict cached answers built on chunks that just changed.
+
+        Design.md §9: "active invalidation on ingestion of new/updated docs".
+        Best-effort — a failed eviction costs staleness until TTL, and must
+        never fail an ingest that already committed.
+        """
+        if self.cache is None or not chunk_ids:
+            return 0
+        try:
+            return await self.cache.invalidate_chunks(tenant_id, chunk_ids)
+        except Exception:  # noqa: BLE001
+            logger.warning("cache invalidation failed after ingest", exc_info=True)
+            return 0
 
     async def _apply_versioning(
         self, tenant_id: str, documents: list[ParsedDocument]

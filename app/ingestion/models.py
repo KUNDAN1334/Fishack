@@ -65,6 +65,10 @@ class IngestionResult(BaseModel):
     chunks_written: int = 0
     embeddings_computed: int = 0
     embeddings_from_cache: int = 0
+    # Cached ANSWERS evicted because their source chunks changed (Phase 5,
+    # ADR-025). Reported by the CLI so an operator can see that a re-ingest
+    # actually took effect for users, not just in the database.
+    cache_entries_invalidated: int = 0
     errors: list[str] = Field(default_factory=list)
 
     def merge(self, other: IngestionResult) -> None:
@@ -74,4 +78,5 @@ class IngestionResult(BaseModel):
         self.chunks_written += other.chunks_written
         self.embeddings_computed += other.embeddings_computed
         self.embeddings_from_cache += other.embeddings_from_cache
+        self.cache_entries_invalidated += other.cache_entries_invalidated
         self.errors.extend(other.errors)
