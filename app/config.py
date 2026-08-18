@@ -276,6 +276,49 @@ class Settings(BaseSettings):
         "I'm escalating this to a human agent."
     )
 
+    # -------------------------------------------------- caching (§9) --
+    # Design.md §9 makes caching the PRIMARY cost lever, not a latency
+    # optimization: "cost < $0.02/query ke liye caching critical hai — agar
+    # 30-40% queries repeat/similar hain, cache hit se LLM call hi skip ho
+    # jata hai."
+    cache_enabled: bool = True
+
+    # TTL must be SHORTER than the data-freshness requirement (§9). One hour
+    # bounds how long a stale answer can survive if active invalidation ever
+    # misses something. Active invalidation is the real mechanism; TTL is the
+    # backstop for bugs in it.
+    cache_ttl_seconds: int = 3600
+
+    # Design.md §9's threshold. Two queries whose embeddings are this close
+    # are treated as the same question.
+    #
+    # This is the most dangerous number in the system. Above it, we serve an
+    # answer that was written for a DIFFERENT question. See ADR-024 for the
+    # three guardrails that make 0.95 survivable — chiefly that queries
+    # containing an identifier skip the semantic cache entirely, because
+    # ERR_TIMEOUT_502 and ERR_TIMEOUT_504 embed almost identically and have
+    # opposite answers.
+    semantic_cache_enabled: bool = True
+    semantic_cache_threshold: float = 0.95
+    # How many recent cached queries to compare against per tenant. Bounded
+    # because a linear scan is fine at 200 and not at 200,000.
+    # PRODUCTION NOTE: at scale this becomes a vector index over cached
+    # queries (Redis Stack, or a pgvector table), not a scan.
+    semantic_cache_max_candidates: int = 200
+
+    # ---------------------------------------------------------- /stats --
+    # Default window for the admin dashboard. 24h is the operational
+    # question ("is it healthy right now"); longer ranges are a query param.
+    stats_default_hours: int = 24
+
+    # Shared token guarding /admin/*. Empty = open, which is right for local
+    # development and wrong the moment the service is reachable from the
+    # internet: /admin is the one endpoint that reads ACROSS tenants, so it
+    # exposes every tenant's request volume and cost. `require_admin` logs a
+    # warning on every unauthenticated call so an unset token cannot go
+    # unnoticed in a deployment.
+    admin_token: str = ""
+
     @property
     def provider_order(self) -> list[str]:
         """Parsed fallback chain, e.g. ['groq', 'gemini', 'openrouter']."""
