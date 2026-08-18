@@ -185,6 +185,13 @@ class ChatResponse(BaseModel):
     # the trace row, because the playground and the Phase 6 UI both show them
     # and neither should have to query Postgres to do it.
     confidence: float = 0.0
+    # 'miss' | 'exact_hit' | 'semantic_hit'. Lands on the trace row and drives
+    # the cache-hit-rate figure on /stats.
+    cache_status: str = "miss"
+    # Only set on a semantic hit: how close the new query was to the cached
+    # one. On the trace so a bad hit is diagnosable — "0.951, just over the
+    # line" is a very different story from "0.998".
+    cache_similarity: float | None = None
     provider: str | None = None
     model: str | None = None
     tokens_in: int = 0

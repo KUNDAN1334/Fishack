@@ -65,6 +65,7 @@ class ChatPipeline:
         validator: CitationValidator,
         embeddings: EmbeddingService,
         settings: Settings,
+        cache=None,
     ):
         self.pool = pool
         self.retrieval = retrieval
@@ -73,6 +74,11 @@ class ChatPipeline:
         self.validator = validator
         self.embeddings = embeddings
         self.settings = settings
+        # Optional so the eval harness and tests can run without Redis. None
+        # means every request is a miss, which is the correct behaviour for a
+        # measurement run anyway — a cached answer would make the harness score
+        # a previous run's output.
+        self.cache = cache
 
     # ------------------------------------------------------------ public --
 
@@ -110,6 +116,19 @@ class ChatPipeline:
         response.rewrite_ms = rewrite.elapsed_ms
         if rewrite.changed:
             logger.info("rewrote %r -> %r", rewrite.original, rewrite.rewritten)
+
+        # ------------------------------------------------- 1b. cache --
+        # AFTER rewriting, not before. A follow-up ("what about the backoff?")
+        # is meaningless as a cache key — the same four words mean different
+        # things in different conversations, so caching on the raw query would
+        # serve one conversation's answer into another. The REWRITTEN query is
+        # standalone by construction, which is exactly what a cache key needs
+        # to be. Costs one rewrite call on a hit; buys correctness.
+        cached = await self._lookup_cache(request, rewrite.effective_query, response)
+        if cached is not None:
+            async for event in self._serve_cached(request, response, cached, started):
+                yield event
+            return
 
         # ------------------------------------------------- 2. retrieve --
         try:
@@ -251,8 +270,119 @@ class ChatPipeline:
                 )
 
         response.total_ms = int((time.perf_counter() - started) * 1000)
+
+        # Cache only real answers. Abstentions are excluded inside
+        # `_store_cache` rather than here, so there is one place that decides.
+        await self._store_cache(rewrite.effective_query, response)
+
         await self._finish(response)
         yield StreamChunk(type="final", data=response.model_dump(mode="json"))
+
+    # ------------------------------------------------------------- cache --
+
+    async def _lookup_cache(self, request, query: str, response) -> object | None:
+        """Exact first, then semantic. Returns a CachedAnswer or None.
+
+        Exact is one O(1) GET and cannot be wrong, so it runs first and its hit
+        costs nothing. Semantic needs an embedding plus a scan and CAN be
+        wrong, so it only runs after exact misses.
+        """
+        if self.cache is None:
+            return None
+
+        hit = await self.cache.get_exact(request.tenant_id, query)
+        if hit is not None:
+            response.cache_status = "exact_hit"
+            return hit
+
+        if not self.settings.semantic_cache_enabled:
+            return None
+
+        # The embedding is not wasted on a miss — retrieval needs it two steps
+        # later. (Reusing it there is a Phase 6 refactor; noted rather than
+        # done, because threading it through changes the retrieval signature.)
+        try:
+            query_vector = await self.embeddings.embed_query(query)
+        except Exception:  # noqa: BLE001 — a cache lookup must not break a request
+            logger.warning("could not embed for semantic cache lookup", exc_info=True)
+            return None
+
+        hit = await self.cache.get_semantic(request.tenant_id, query, query_vector)
+        if hit is not None:
+            response.cache_status = "semantic_hit"
+            response.cache_similarity = hit.similarity
+            return hit
+        return None
+
+    async def _serve_cached(self, request, response, cached, started: float):
+        """Emit a cached answer in exactly the same event shape as a fresh one.
+
+        The client must not be able to tell the difference in STRUCTURE — same
+        meta, delta, final sequence — while the trace records precisely what
+        happened. Two audiences, two levels of detail.
+        """
+        response.answer = cached.answer
+        response.citations = cached.citations
+        response.citation_report = cached.citation_report
+        response.confidence = cached.confidence
+        response.action = "cache_hit"
+        # Provider and model describe who wrote it ORIGINALLY. Token counts and
+        # cost stay at zero: this request spent nothing, and reporting the
+        # original spend would make /stats describe a request that never
+        # happened — inflating cost-per-query precisely when caching is
+        # working (Design.md §9's whole justification).
+        response.provider = cached.provider
+        response.model = cached.model
+
+        logger.info(
+            "%s for tenant %s (cached %.0fs ago)",
+            response.cache_status, request.tenant_id, cached.age_seconds(),
+        )
+
+        yield StreamChunk(
+            type="meta",
+            data={
+                "citations": [c.model_dump(mode="json") for c in cached.citations],
+                "gate": None,
+                "rewrite": response.rewrite.model_dump(mode="json") if response.rewrite else None,
+                "cache_status": response.cache_status,
+                "cache_similarity": response.cache_similarity,
+            },
+        )
+        # Emitted whole rather than token by token. Faking a typing animation
+        # for text we already have would add latency to make a fast path look
+        # slow.
+        yield StreamChunk(type="delta", text=cached.answer)
+
+        response.total_ms = int((time.perf_counter() - started) * 1000)
+        await self._finish(response)
+        yield StreamChunk(type="final", data=response.model_dump(mode="json"))
+
+    async def _store_cache(self, query: str, response) -> None:
+        """Cache a real answer. Never an abstention.
+
+        An abstention is a statement about the corpus AT ONE MOMENT. Cache it
+        and the refusal survives for an hour after someone adds the missing
+        documentation — the system would actively decline to use content it
+        now has. Phase 1 built versioning to stop serving stale information;
+        caching a refusal reintroduces it in the worst form, because the user
+        is told nothing exists.
+        """
+        if self.cache is None or response.is_abstention or not response.answer.strip():
+            return
+
+        from app.cache.store import summarize_for_cache
+
+        try:
+            query_vector = (
+                await self.embeddings.embed_query(query)
+                if self.settings.semantic_cache_enabled else None
+            )
+            await self.cache.store(
+                response.tenant_id, query, summarize_for_cache(response, query), query_vector
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("failed to cache answer (ignored)", exc_info=True)
 
     # --------------------------------------------------------- internals --
 
