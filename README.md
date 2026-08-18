@@ -1,6 +1,6 @@
-# Fishly 🎣
+# Fishack 🎣
 
-**Fishly fishes out the exact answer from a sea of docs — no fishy answers: every claim is cited, verified, and confidence-gated; when Fishly isn't sure, it escalates to a human instead of hallucinating.**
+**Fishack fishes out the exact answer from a sea of docs — no fishy answers: every claim is cited, verified, and confidence-gated; when Fishack isn't sure, it escalates to a human instead of hallucinating.**
 
 A multi-tenant RAG customer support assistant for "Flowlytics", a fictional B2B analytics and billing SaaS. Built raw — **no LangChain, no LlamaIndex** — on FastAPI, Postgres + pgvector, Redis, local embedding and reranker models, and free-tier LLM APIs behind an automatic multi-provider fallback chain.
 
@@ -261,7 +261,7 @@ response, and a missing model fails the deploy rather than the first customer.
 Watch for it:
 
 ```bash
-docker compose logs -f api      # wait for "Fishly up. LLM chain: ..."
+docker compose logs -f api      # wait for "Fishack up. LLM chain: ..."
 ```
 
 Ingestion embeds ~312 chunks on CPU — roughly two minutes. It is idempotent, so

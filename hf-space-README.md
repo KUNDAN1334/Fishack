@@ -1,5 +1,5 @@
 ---
-title: Fishly
+title: Fishack
 emoji: 🎣
 colorFrom: blue
 colorTo: indigo
@@ -8,9 +8,9 @@ app_port: 8000
 pinned: false
 ---
 
-# Fishly — API
+# Fishack — API
 
-Backend for [Fishly](https://github.com/YOUR_USERNAME/fishly): a multi-tenant
+Backend for [Fishack](https://github.com/YOUR_USERNAME/fishack): a multi-tenant
 RAG customer support assistant with hybrid retrieval, a confidence gate,
 grounded generation with verified citations, and a first-class eval harness.
 
