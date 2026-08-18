@@ -2,62 +2,348 @@
 
 **Fishly fishes out the exact answer from a sea of docs — no fishy answers: every claim is cited, verified, and confidence-gated; when Fishly isn't sure, it escalates to a human instead of hallucinating.**
 
-A multi-tenant RAG customer support assistant for "Flowlytics" (a fictional B2B analytics + billing SaaS). Built raw — no LangChain/LlamaIndex — on FastAPI, Postgres + pgvector, Redis, local embedding/reranker models, and free-tier LLM APIs with an automatic multi-provider fallback chain.
+A multi-tenant RAG customer support assistant for "Flowlytics", a fictional B2B analytics and billing SaaS. Built raw — **no LangChain, no LlamaIndex** — on FastAPI, Postgres + pgvector, Redis, local embedding and reranker models, and free-tier LLM APIs behind an automatic multi-provider fallback chain.
 
-> **Status: Phase 1 complete** — infrastructure, LLM client, synthetic corpus, and the full ingestion pipeline.
-> Results tables, architecture diagram and demo GIF land in Phase 7.
+---
+
+## Demo
+
+<!-- DEMO GIF PLACEHOLDER
+     Record with: docs/demo.md (10-minute script, exact queries and order)
+     Frames worth capturing:
+       1. sources panel populating BEFORE the first token
+       2. the planted stale-data conflict — two sources, one flagged "superseded in part"
+       3. an out-of-scope question abstaining with zero LLM calls
+       4. clicking [2] to reveal the chunk + the validator's per-claim verdict
+       5. /admin — latency per stage, cost per query, cache hit rate
+-->
+
+> **GIF not recorded yet.** `docs/demo.md` is the script in the meantime — a
+> ten-minute walkthrough with the exact queries, in order, and what each screen
+> is proving. Drop `docs/demo.gif` in and replace this block.
+
+---
+
+## Architecture
+
+```mermaid
+flowchart TB
+    subgraph Client["Next.js (Phase 6)"]
+        UI[Chat UI<br/>streaming · sources panel · 👍/👎]
+        ADM[Admin dashboard<br/>/admin/stats]
+    end
+
+    subgraph Query["FastAPI — the query path"]
+        RW["1 · Query rewriting<br/><i>follow-up → standalone</i>"]
+        CACHE{"2 · Cache<br/><i>exact → semantic</i>"}
+        RET["3 · Hybrid retrieval<br/><i>BM25 + vector → RRF</i>"]
+        RR["4 · Cross-encoder rerank<br/><i>top-8 → top-5</i>"]
+        GATE{"5 · Confidence gate<br/><i>before generation</i>"}
+        GEN["6 · Grounded generation<br/><i>closed-book · cited · streamed</i>"]
+        VAL["7 · Citation validation<br/><i>post-hoc, per claim</i>"]
+        ESC["Escalation<br/><i>+ full context</i>"]
+    end
+
+    subgraph Ingest["Ingestion (Phase 1)"]
+        LOAD[3 loaders] --> CHUNK[3 chunking strategies<br/><i>section · entry · Q&A pair</i>]
+        CHUNK --> EMB[bge-small, cached]
+        EMB --> VER[Versioning<br/><i>supersede · tag conflicts</i>]
+    end
+
+    subgraph Data["Storage"]
+        PG[("Postgres + pgvector<br/><i>chunks · traces · escalations</i>")]
+        RD[("Redis<br/><i>answer cache · quota</i>")]
+    end
+
+    subgraph Eval["fishnet/ (Phase 4)"]
+        GOLD[65-case golden set] --> METRICS[recall · MRR · LLM-judge]
+        METRICS --> GATE2{CI regression gate}
+    end
+
+    UI --> RW --> CACHE
+    CACHE -- hit --> UI
+    CACHE -- miss --> RET --> RR --> GATE
+    GATE -- "below threshold" --> ESC --> UI
+    GATE -- confident --> GEN --> VAL --> UI
+    UI -.👍/👎.-> PG
+
+    RET --> PG
+    CACHE <--> RD
+    VER --> PG
+    GEN -.-> LLM["LLM chain<br/>Groq → Gemini → OpenRouter → Ollama"]
+    RW -.-> LLM
+    ADM --> PG
+    METRICS -.-> RET
+
+    classDef store fill:#eef7fb,stroke:#2b90b6
+    class PG,RD store
+```
+
+**Tenant isolation runs through all of it.** Every database read goes through a
+`TenantScope` that owns the `FROM` clause and welds on
+`WHERE tenant_id = $1 AND is_current`; every cache key is namespaced by tenant.
+Backed by construction-time guards, a runtime tripwire, a source-lint test, and
+a CI leakage test with controls that stop it passing vacuously.
+
+Diagrams per phase, storage layout and every knob's provenance:
+**[`docs/architecture.md`](docs/architecture.md)**.
+
+---
+
+## Results
+
+Measured on the 65-case golden set across both tenants, via `make eval-retrieval`.
+Retrieval-only, so no LLM calls and fully reproducible.
+
+### Retrieval strategies
+
+| arm | recall@5 | recall@20 | MRR | mean latency |
+|---|---|---|---|---|
+| BM25 only | 0.747 | 0.928 | 0.677 | 10 ms |
+| Vector only | **0.938** | **1.000** | 0.820 | 40 ms |
+| BM25 + vector (RRF) | 0.910 | 0.982 | 0.768 | 50 ms |
+| BM25 + vector + reranker | 0.895 | 0.982 | 0.863 | 1,700 ms |
+| **Vector + reranker** | 0.915 | **1.000** | **0.893** | 3,300 ms |
+
+**Hybrid retrieval did not beat vector-only on this corpus** — and that is the
+most useful thing the eval harness produced. Per question type, MRR:
+
+| question type | BM25 | vector | hybrid |
+|---|---|---|---|
+| exact identifiers (`ERR_TIMEOUT_502`) | 0.542 | 0.652 | **0.726** |
+| multi-turn follow-ups | 0.159 | **0.625** | 0.306 |
+
+BM25 helps exactly where Design.md §5 predicts and is near-useless on short
+pronoun-heavy follow-ups. Equal-weight RRF lets the harm win the average.
+
+The sharpest single case: on *"how long until my events show up in the
+dashboard?"* the correct chunk sat at **rank 7** under vector search and
+**rank 20** after fusion. Only the top 8 candidates reach the reranker, so
+blending pushed the right answer **out of the reranker's reach** — the vector
+arm recovered it, the hybrid arm could not.
+
+> **Caveat that matters.** This corpus is AI-written prose: smooth and
+> semantically easy. Real documentation full of internal jargon and codenames
+> would favour BM25 considerably more. This is a result about *this corpus*,
+> not about retrieval in general.
+
+### Chunking: per-source vs naive fixed-size
+
+Same corpus ingested twice — once with the three per-source chunkers, once with
+fixed 1,600-character windows — under shadow tenants, scored identically.
+`make chunking-experiment`.
+
+| question type | metric | naive | per-source |
+|---|---|---|---|
+| **overall** | recall@5 | 0.591 | **0.858** |
+| | recall@20 | 0.863 | **0.972** |
+| exact identifiers | recall@5 | 0.667 | **1.000** |
+| | MRR | 0.450 | **0.726** |
+| multi-turn | recall@20 | 0.550 | **1.000** |
+
+Naive chunking loses **45% of multi-turn answers entirely** — not just ranked
+lower, absent from the top 20. It cuts a ticket's question away from its
+resolution and strips the heading context that tells a chunk what it is about.
+
+> **Measurement caveat, stated because it cuts both ways.** Naive chunks carry
+> no heading, so a docs locator resolves to a whole page there versus one
+> section in the smart arm. A larger expected set *depresses* recall and
+> *inflates* precision and MRR for the naive arm. So the recall gap is somewhat
+> overstated and the MRR gap understated. `hit@5` is immune to this and is now
+> the experiment's headline metric — see `docs/lessons.md` #16.
+
+### Latency and cost
+
+| | retrieval only | + reranker | full answer |
+|---|---|---|---|
+| p50 | 29 ms | 1,548 ms | measured per run |
+| p95 | 71 ms | 5,290 ms | measured per run |
+
+**The cross-encoder costs more than the entire latency budget.** Mean 1.7–3.3s
+on a 12-thread CPU, against Design.md's P95 < 3s target *for the whole
+request*. Buying +0.073 MRR for +3.3 seconds is a real product decision, and
+the numbers to make it are now on the table rather than in a hunch.
+
+`# PRODUCTION NOTE:` on a GPU or a hosted reranker that is ~200ms and an
+obvious yes. On this hardware it ships behind a flag with conditional
+triggering.
+
+Cost is tracked as **virtual cost** — what the same token usage *would* cost at
+paid-API prices, since actual spend on free tiers is $0. Methodology and the
+price table are in `app/config.py`; live figures are on `/admin`.
+
+Full harness documentation, how to read a scorecard, and how to add cases:
+**[`docs/evals.md`](docs/evals.md)**.
+
+---
+
+## Interesting problems I hit
+
+Twenty-one of them are written up in **[`docs/lessons.md`](docs/lessons.md)** —
+each as *what I expected → what happened → why → the lesson*, in plain
+language. The common thread: **the dangerous failures are the silent ones.**
+None of these crashed. The full test suite was green the entire time.
+
+**1. My keyword search returned zero rows, and nothing complained.**
+Every convenient Postgres helper — `plainto_tsquery`, `websearch_to_tsquery` —
+joins terms with `AND`. That is boolean retrieval; BM25 *sums* a per-term
+contribution, so partial matches must still score. `"webhook retry limit
+ERR_TIMEOUT_502"` matched nothing, because no single chunk held all six
+lexemes. Hybrid retrieval silently became vector-only. Fixing it by OR-ing
+everything then broke exact identifiers — `ERR_TIMEOUT_502` lexes to three
+tokens, so any chunk containing `err` matched. The right answer distinguishes
+`&` (concepts the user typed → OR) from `<->` (one identifier held together →
+leave alone). Three versions of one line.
+
+**2. My eval scored the wrong list, and made a working feature look useless.**
+`hybrid` and `hybrid+rerank` produced byte-identical scorecards while the
+reranker burned 1.4s per query. The eval was scoring `candidates` — the
+*pre-rerank* list — because reranking returns a new list into `results` rather
+than re-sorting in place. The obvious conclusion would have been "delete the
+reranker". Once fixed it was worth +12% MRR overall and +33% on normal
+questions.
+
+**3. A test that guards against fake passes, which itself passed fakely.**
+My tenant-isolation test plants a secret in tenant B and asserts tenant A never
+sees it — with a *control* proving the secret is findable without the filter,
+so the test can't pass on an empty index. The control counted matches across
+the whole table, so the real corpus satisfied it while the test tenants matched
+nothing at all.
+
+**4. A threshold I never measured was wrong by 4x, in the direction that hid
+the feature.** `0.30` sat in config with a confident comment. Real queries
+produce 0.055–0.076, and the arithmetic caps it at 0.062 — so the gate could
+never fire. A config value that *looks* tuned and does nothing.
+
+**5. The same mistake, three times, in three places.** The scorecard averaged
+three retrieval strategies into one row. The eval compared pre- and post-rerank
+lists as if they were the same thing. The chunking experiment scored 8 cases in
+one arm and 41 in the other and printed a delta anyway. All three: *a
+comparison that wasn't comparing the same things*, presented as a confident
+number. The fix wasn't more care — it was a guard at each comparison point that
+checks validity before formatting.
+
+**6. A semantic cache is the most dangerous component in a RAG system.**
+`ERR_TIMEOUT_502` and `ERR_TIMEOUT_504` embed above a 0.95 similarity threshold
+— they *mean* nearly the same thing — and have opposite answers. That is the
+weakness hybrid retrieval exists to fix, except the cache is pure vector
+similarity with no keyword leg and no reranker. So identifier-bearing queries
+skip the semantic cache entirely. And abstentions are never cached: "I don't
+know" is a fact about the corpus at one moment, and caching it makes the system
+refuse documentation it now has.
+
+**7. Instrumentation that lies when the feature works.** A cache hit is free —
+so if it replayed the original answer's cost, cost-per-query would *rise* as
+caching improved. The dashboard would show the system getting more expensive
+exactly as it got cheaper, on the metric caching exists to improve.
+
+---
 
 ## Quickstart
 
-```bash
-cp .env.example .env                  # add free Groq / Gemini / OpenRouter keys
-docker compose up -d --build          # postgres+pgvector, redis
-pip install -e ".[dev]"               # includes sentence-transformers (~2GB torch, one time)
-python scripts/migrate.py             # apply the schema
-python scripts/smoke_test.py          # verify infra + every configured provider
-```
-
-Then build the knowledge base:
+Three commands. Postgres, Redis, the API and the UI all come up together.
 
 ```bash
-python scripts/generate_corpus.py     # synthetic Flowlytics corpus -> data/raw/
-python scripts/ingest.py run          # chunk, embed, version (first run downloads bge-small)
-python scripts/ingest.py stats        # what landed
+cp .env.example .env    # add a free Groq key — the rest are optional fallbacks
+docker compose up -d --build
+docker compose exec api python scripts/ingest.py run
 ```
 
-`make` targets exist for all of these (`make up`, `make migrate`, `make corpus`, `make ingest`, `make test`).
+Then open **http://localhost:3000** (chat) and **http://localhost:3000/admin**
+(operations).
 
-## What exists today
+<details>
+<summary>First run takes a few minutes — here's what's happening</summary>
 
-**Phase 0 — infrastructure**
+The API container downloads `bge-small` and `bge-reranker-base` (~450 MB) at
+startup, deliberately: paying it during boot means the first user gets a normal
+response, and a missing model fails the deploy rather than the first customer.
+Watch for it:
 
-- docker-compose: Postgres 16 + pgvector, Redis, API, optional Ollama profile
-- Config system with every threshold and model name commented (`app/config.py`)
-- Full DB schema in raw SQL migrations: tenants, documents, chunks, embedding cache, traces, escalations, feedback
-- Provider-agnostic LLM client over raw `httpx`: Groq → Gemini → OpenRouter → Ollama fallback chain, exponential backoff with jitter, `Retry-After` handling, streaming (SSE parsed by hand), per-provider Redis budget counters with virtual-cost tracking
+```bash
+docker compose logs -f api      # wait for "Fishly up. LLM chain: ..."
+```
 
-**Phase 1 — corpus + ingestion**
+Ingestion embeds ~312 chunks on CPU — roughly two minutes. It is idempotent, so
+re-running is free.
 
-- Synthetic Flowlytics corpus: 60 doc pages, 40 changelog entries, 50 resolved tickets across two tenants (`acme`, `globex`), generated from a deterministic skeleton with LLM-written prose (cached, reproducible, works offline)
-- Deliberately planted stale data: one clean supersession + four unmarked doc/changelog conflicts
-- Three chunking strategies, one per source type (structure-aware / entry-level / Q&A pair)
-- Content-hash dedup, versioning with soft-delete, changelog-driven supersession, conflict tagging
-- Local bge-small embeddings on CPU, cached by `sha256(model + text)` so nothing is ever embedded twice
-- Ingest + inspect CLI (`scripts/ingest.py run | stats | inspect | conflicts | reset`)
+The corpus itself is **committed** (ADR-008), including the LLM prose cache, so
+a fresh clone reproduces the exact same documents with no API key. Regenerate
+with `python scripts/generate_corpus.py` if you want to.
 
-**Tests:** 67 passing — fallback chain, backoff math, budget counters, chunker edge cases (tables, code fences, tiny docs, walls of text, overlap, model-limit cap), dedup, loaders.
+</details>
 
-## Coming next
+Deploying it somewhere? **[`docs/deployment.md`](docs/deployment.md)** — the
+memory maths that decides your hosting, a free-tier stack that works, and the
+one endpoint you must protect before making it public.
 
-Phase 2 hybrid retrieval (BM25 + vector + RRF + cross-encoder reranker) · Phase 3 query rewriting, confidence gate, grounded generation with citation validation · Phase 4 `fishnet/` eval harness + golden set + the chunking before/after experiment · Phase 5 caching, feedback loop, `/stats` · Phase 6 Next.js frontend · Phase 7 documentation and results.
+<details>
+<summary>Local development without Docker</summary>
+
+```bash
+docker compose up -d postgres redis
+python -m venv .venv && .venv/Scripts/activate     # or source .venv/bin/activate
+pip install -e ".[dev]"
+python scripts/migrate.py && python scripts/ingest.py run
+make api                                            # terminal 1
+cd frontend && npm install && npm run dev           # terminal 2
+```
+
+</details>
+
+### Try it
+
+| query | what it demonstrates |
+|---|---|
+| *What is the webhook retry limit?* | the planted stale-data conflict — docs say 3, the v2.4 changelog says 5. Watch it prefer the newer source **and flag the discrepancy** |
+| *What causes ERR_TIMEOUT_502?* | exact identifiers, where the keyword leg earns its place |
+| *What is the capital of France?* | out of scope — abstains with **zero LLM calls**, and opens an escalation |
+| *ask the same question twice* | the cache: `⚡ cached`, and total time drops to ~10 ms |
+| *switch tenant, ask again* | isolation — different private documents, no leakage |
+
+`docs/demo.md` is the full ten-minute script.
+
+---
+
+## Tooling
+
+| command | what it does |
+|---|---|
+| `make test` | 369 tests + 23 integration |
+| `make eval-retrieval` | retrieval scorecard, no LLM calls, under a minute |
+| `make eval` | full harness incl. LLM-as-judge, vs the committed baseline |
+| `make chunking-experiment` | naive vs per-source chunking, on shadow tenants |
+| `make tune` | sweep the confidence gate against the golden set |
+| `make playground` | BM25 / vector / hybrid / reranked, side by side |
+| `make chat` | the pipeline in a terminal, every stage's decision visible |
+| `make show-prompt` | the exact messages the model receives |
+| `make triage` | classify 👎 into retrieval / generation / stale-data |
+
+---
 
 ## Docs
 
-| File | Contents |
+| file | contents |
 |---|---|
-| `Design.md` | The system design this implements |
-| `docs/architecture.md` | System overview, mermaid diagrams, storage layout |
-| `docs/decisions.md` | ADR log — every significant choice, alternatives, why rejected |
-| `docs/walkthroughs/` | Per-phase build walkthroughs with file-by-file traces |
-| `docs/interview_prep.md` | Accumulated Q&A with model answers |
-| `docs/glossary.md` | Every AI term used, in plain sentences |
+| **[`docs/lessons.md`](docs/lessons.md)** | **21 things that broke, and what they taught — start here** |
+| [`Design.md`](Design.md) | the system design this implements |
+| [`docs/architecture.md`](docs/architecture.md) | diagrams per phase, storage layout, every knob's provenance |
+| [`docs/decisions.md`](docs/decisions.md) | 28 ADRs — every choice, alternatives, why rejected |
+| [`docs/evals.md`](docs/evals.md) | how the harness works, how to read a scorecard, how to add cases |
+| [`docs/interview_prep.md`](docs/interview_prep.md) | 36 questions with model answers |
+| [`docs/glossary.md`](docs/glossary.md) | every AI term used, in plain sentences |
+| [`docs/walkthroughs/`](docs/walkthroughs/) | per-phase build notes with file-by-file traces |
+| [`docs/demo.md`](docs/demo.md) | the ten-minute demo script |
+| [`docs/deployment.md`](docs/deployment.md) | running from scratch, and deploying end to end on free tiers |
+| [`docs/rebuild_exercises.md`](docs/rebuild_exercises.md) | seven core files to delete and re-implement |
+
+## Stack
+
+Python 3.12 · FastAPI · Pydantic v2 · Postgres 16 + pgvector · Redis ·
+`bge-small-en-v1.5` + `bge-reranker-base` (local, CPU) · Groq / Gemini /
+OpenRouter / Ollama · Next.js App Router + Tailwind · pytest · Docker Compose
+
+**No LangChain, no LlamaIndex, no vendor SDKs.** Every provider is raw `httpx`;
+retrieval, fusion, reranking, prompting, citation validation, caching and
+evaluation are all written out. That is the point — the interesting decisions
+are the ones a framework would have made for you.
