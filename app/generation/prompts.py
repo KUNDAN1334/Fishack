@@ -1,6 +1,6 @@
 """Prompt construction — a direct implementation of Design.md §7.
 
-Every prompt in Fishly lives in this one file, as module-level constants with
+Every prompt in Fishack lives in this one file, as module-level constants with
 the reasoning beside them. That is deliberate: prompts are the part of a RAG
 system most likely to be edited under pressure ("just add one more rule"), and
 the fastest way to lose track of why a system behaves the way it does is to

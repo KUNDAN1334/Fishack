@@ -1,7 +1,7 @@
 [project]
-name = "fishly"
+name = "fishack"
 version = "0.1.0"
-description = "Fishly — multi-tenant RAG customer support assistant. Fishes out the exact answer from a sea of docs; every claim cited, verified, and confidence-gated."
+description = "Fishack — multi-tenant RAG customer support assistant. Fishes out the exact answer from a sea of docs; every claim cited, verified, and confidence-gated."
 requires-python = ">=3.12"
 dependencies = [
     # Web framework + validation (Pydantic v2 is a hard project constraint)

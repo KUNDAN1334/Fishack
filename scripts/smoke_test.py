@@ -135,7 +135,7 @@ async def main() -> int:
     args = parser.parse_args()
 
     settings = get_settings()
-    print("=== Fishly smoke test ===\n")
+    print("=== Fishack smoke test ===\n")
 
     pg_ok = await check_postgres(settings)
     redis_ok = await check_redis(settings)

@@ -1,4 +1,4 @@
-# Fishly — developer entrypoints.
+# Fishack — developer entrypoints.
 # On Windows without make: each target is 1-2 commands you can run directly
 # (docker compose ..., python -m ...). See README quickstart.
 

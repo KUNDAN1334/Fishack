@@ -1,7 +1,7 @@
 """Shared types, errors, and the Provider interface for the LLM layer.
 
 Every provider (Groq, Gemini, OpenRouter, Ollama) speaks a different HTTP
-dialect; this module defines the ONE shape the rest of Fishly sees. Nothing
+dialect; this module defines the ONE shape the rest of Fishack sees. Nothing
 outside app/llm/ ever touches a provider-specific field.
 """
 

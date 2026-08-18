@@ -166,7 +166,7 @@ async def run_turn(
             print_meta(event.data or {})
         elif event.type == "delta":
             if not printed_answer_header:
-                print("\nFISHLY: ", end="", flush=True)
+                print("\nFISHACK: ", end="", flush=True)
                 printed_answer_header = True
             # Printed as it arrives — this is what streaming is FOR, and it is
             # the only way to feel time-to-first-token rather than read it.

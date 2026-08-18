@@ -1,4 +1,4 @@
-"""fishnet — Fishly's eval harness (it catches bad answers).
+"""fishnet — Fishack's eval harness (it catches bad answers).
 
 A first-class module, not a test folder: `python -m fishnet.run` in
 development, `make eval` in CI.

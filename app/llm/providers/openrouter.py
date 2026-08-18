@@ -20,5 +20,5 @@ class OpenRouterProvider(OpenAICompatProvider):
             base_url=OPENROUTER_BASE_URL,
             timeout=timeout,
             # Optional attribution headers OpenRouter asks apps to send
-            extra_headers={"HTTP-Referer": "https://github.com/fishly", "X-Title": "Fishly"},
+            extra_headers={"HTTP-Referer": "https://github.com/fishack", "X-Title": "Fishack"},
         )

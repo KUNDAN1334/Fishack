@@ -1,6 +1,6 @@
 """Shared fixtures — chiefly the database ones.
 
-Most of Fishly's suite is pure and runs anywhere. Retrieval is not: the whole
+Most of Fishack's suite is pure and runs anywhere. Retrieval is not: the whole
 point of Phase 2 is SQL, and SQL that is never executed is a hypothesis. So a
 handful of tests need a live Postgres with pgvector.
 

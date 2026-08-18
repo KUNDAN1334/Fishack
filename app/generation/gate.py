@@ -15,7 +15,7 @@ also means the failure costs zero tokens and zero latency, and Design.md §9
 makes cost a first-class constraint.
 
 The gate's cost, stated honestly: it is the single control most likely to
-produce a WRONG abstention. Set it too high and Fishly refuses questions it
+produce a WRONG abstention. Set it too high and Fishack refuses questions it
 could have answered, which users experience as a broken product and which
 shows up as a rising escalation rate (Design.md §12 lists that metric for
 exactly this reason). Too low and it stops defending anything. That is why

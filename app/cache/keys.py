@@ -2,7 +2,7 @@
 
 Small module, three jobs, all of them correctness rather than plumbing.
 
-1. NAMESPACING. Every key starts `fishly:cache:{tenant_id}:`. Not a
+1. NAMESPACING. Every key starts `fishack:cache:{tenant_id}:`. Not a
    convention — every function here takes tenant_id as its first argument and
    there is no way to build a key without one, the same discipline
    `TenantScope` applies to SQL (ADR-012).
@@ -21,7 +21,7 @@ from __future__ import annotations
 import hashlib
 import re
 
-PREFIX = "fishly:cache"
+PREFIX = "fishack:cache"
 
 
 def _namespace(tenant_id: str) -> str:
@@ -46,7 +46,7 @@ def normalize_query(query: str) -> str:
 
 
 def exact_key(tenant_id: str, query: str) -> str:
-    """`fishly:cache:{tenant}:exact:{sha256}`.
+    """`fishack:cache:{tenant}:exact:{sha256}`.
 
     Hashed rather than storing the raw query in the key: queries can be long,
     contain colons (which would break key parsing), and occasionally contain

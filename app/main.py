@@ -97,14 +97,14 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info(
-        "Fishly up. LLM chain: %s", " -> ".join(p.name for p in app.state.llm.providers)
+        "Fishack up. LLM chain: %s", " -> ".join(p.name for p in app.state.llm.providers)
     )
     yield
     await app.state.db_pool.close()
     await app.state.redis.aclose()
 
 
-app = FastAPI(title="Fishly", version="0.5.0", lifespan=lifespan)
+app = FastAPI(title="Fishack", version="0.5.0", lifespan=lifespan)
 app.include_router(chat_router)
 app.include_router(feedback_router)
 app.include_router(admin_router)

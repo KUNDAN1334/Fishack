@@ -1,4 +1,4 @@
--- 001_init.sql — Fishly core schema (Phase 0).
+-- 001_init.sql — Fishack core schema (Phase 0).
 -- Implements Design.md §3 (versioning), §4 (chunk metadata), §8 (tenant
 -- isolation), §12 (observability). Later phases ADD tables/columns; this
 -- shape is stable.

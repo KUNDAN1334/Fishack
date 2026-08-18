@@ -1,4 +1,4 @@
-"""Central configuration for Fishly.
+"""Central configuration for Fishack.
 
 Implements the project rule: every constant, threshold, and model name lives
 HERE with a comment explaining how it was chosen — never inline in code.
@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     )
 
     # ------------------------------------------------------------- infra --
-    database_url: str = "postgresql://fishly:fishly@localhost:5432/fishly"
+    database_url: str = "postgresql://fishack:fishack@localhost:5432/fishack"
     redis_url: str = "redis://localhost:6379/0"
 
     # ------------------------------------------------- LLM provider chain --

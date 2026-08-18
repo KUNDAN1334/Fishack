@@ -67,7 +67,7 @@ def test_agreement_wins_even_at_the_bottom_of_our_candidate_window():
         solo:    1/(60+ 1) = 0.01639
 
     This is worth knowing and not obvious. It means that in practice, for
-    Fishly's configuration, "both legs found it" dominates the ranking. That
+    Fishack's configuration, "both legs found it" dominates the ranking. That
     is the behavior we want from hybrid retrieval — but it also means the
     per-leg candidate depth is a real tuning knob, not a formality.
     """

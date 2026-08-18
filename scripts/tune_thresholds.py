@@ -9,10 +9,10 @@
 THE TRADEOFF THIS MEASURES. The confidence gate has exactly one dial and two
 ways to be wrong:
 
-  threshold too HIGH  ->  Fishly refuses questions it could have answered.
+  threshold too HIGH  ->  Fishack refuses questions it could have answered.
                           Users experience a broken product. Shows up as a
                           rising escalation rate (Design.md §12).
-  threshold too LOW   ->  Fishly answers questions it has no information for.
+  threshold too LOW   ->  Fishack answers questions it has no information for.
                           Users experience a confident lie, which is the
                           failure the whole system exists to prevent.
 
