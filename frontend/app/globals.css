@@ -1,0 +1,35 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/*
+ * Colour carries meaning here, and only meaning. A support tool that a user
+ * is deciding whether to TRUST should not look like a toy — so the palette is
+ * one accent plus grey, and every other colour has a job:
+ *
+ *   amber  = escalation (we declined to answer)
+ *   rose   = a validation problem (unsupported or fabricated citation)
+ *   ocean  = interactive / cited / the brand
+ *
+ * If a colour appears without one of those meanings, it is a bug.
+ */
+
+html, body { height: 100%; }
+
+body {
+  @apply bg-slate-50 text-slate-800 antialiased;
+}
+
+/* The blinking caret while the answer streams. Streaming exists to show
+   progress; a static block of text arriving all at once wastes that. */
+@keyframes fishly-caret { 0%, 45% { opacity: 1 } 50%, 95% { opacity: 0 } 100% { opacity: 1 } }
+.caret::after {
+  content: "▌";
+  @apply text-ocean-500 ml-0.5;
+  animation: fishly-caret 1.1s steps(1) infinite;
+}
+
+/* Thin scrollbars so the two panels don't fight for width. */
+.thin-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
+.thin-scroll::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
+.thin-scroll::-webkit-scrollbar-track { background: transparent; }
