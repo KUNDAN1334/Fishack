@@ -47,6 +47,7 @@ from app.generation.models import (
     build_citations,
 )
 from app.generation.rewriter import QueryRewriter
+from app.generation import smalltalk
 from app.retrieval.service import AllLegsFailedError, RetrievalService
 from app.retrieval.tenant_scope import TenantScope
 from app.tracing.recorder import link_escalation_to_trace, record_trace
@@ -105,6 +106,24 @@ class ChatPipeline:
         response = ChatResponse(
             tenant_id=request.tenant_id, conversation_id=request.conversation_id
         )
+
+        # ------------------------------------------------ 0. smalltalk --
+        # Before every other stage, because a greeting is not a retrieval
+        # problem. Left to the pipeline, "hi" retrieves nothing, scores below
+        # the gate, abstains, and opens an escalation — so saying hello puts a
+        # ticket in a human agent's queue.
+        #
+        # The alternative, letting the model handle greetings, is the one thing
+        # this system cannot do: the moment the model may answer without
+        # retrieved context, the closed-book guarantee is gone for every
+        # question, not just this one. So the match is a pure function over a
+        # closed set of anchored phrasings, and anything it does not recognise
+        # falls through to the real pipeline (smalltalk.py).
+        chat = smalltalk.classify(request.query)
+        if chat is not None:
+            async for event in self._serve_smalltalk(response, chat, started):
+                yield event
+            return
 
         # Tenancy enters here and is carried as a SCOPE, never as a string
         # (ADR-012). Nothing downstream can reach the database without it.
@@ -276,6 +295,50 @@ class ChatPipeline:
         await self._store_cache(rewrite.effective_query, response)
 
         await self._finish(response)
+        yield StreamChunk(type="final", data=response.model_dump(mode="json"))
+
+    # --------------------------------------------------------- smalltalk --
+
+    async def _serve_smalltalk(
+        self, response: ChatResponse, chat: smalltalk.Smalltalk, started: float
+    ) -> AsyncIterator[StreamChunk]:
+        """Answer a greeting or an "about you" with a fixed line.
+
+        Same event shape as every other path — meta, delta, final — so no
+        client needs a branch for it.
+
+        NO TRACE ROW IS WRITTEN, and that is the interesting decision here.
+        Nothing observable happened: no retrieval, no model call, no tokens, no
+        cost. Recording it anyway would corrupt two figures on the dashboard —
+        `mean_confidence` would average in a 0.0 from a request that never had a
+        confidence, and the answered count would grow with messages that
+        answered no question. Instrumentation that moves when nothing happened
+        is the same failure as instrumentation that does not move when something
+        did.
+
+        A consequence worth naming: with no trace there is no `trace_id`, so the
+        UI disables its feedback buttons for these replies. That is correct —
+        a thumbs-up on "Hello" is not a signal about answer quality, and
+        counting it would pollute the satisfaction rate.
+
+        PRODUCTION NOTE: the fully honest version is a fifth `action` value,
+        'smalltalk', so these are counted and separable rather than invisible.
+        That needs a migration, because `Action` mirrors a CHECK constraint on
+        `traces.action` — deliberately, so a value that cannot be stored cannot
+        be produced. Invisible is the better of the two failures until then.
+        """
+        response.answer = chat.reply
+        response.action = "answered"
+
+        yield StreamChunk(
+            type="meta", data={"citations": [], "gate": None, "rewrite": None}
+        )
+        # Whole, not token by token. There is no model producing this text, so a
+        # typing animation would be latency added to fake work that never ran.
+        yield StreamChunk(type="delta", text=chat.reply)
+
+        response.total_ms = int((time.perf_counter() - started) * 1000)
+        logger.info("smalltalk (%s) for tenant %s", chat.kind, response.tenant_id)
         yield StreamChunk(type="final", data=response.model_dump(mode="json"))
 
     # ------------------------------------------------------------- cache --
