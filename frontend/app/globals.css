@@ -2,34 +2,182 @@
 @tailwind components;
 @tailwind utilities;
 
-/*
- * Colour carries meaning here, and only meaning. A support tool that a user
- * is deciding whether to TRUST should not look like a toy — so the palette is
- * one accent plus grey, and every other colour has a job:
+/* ==========================================================================
+ * THE COLOUR CONTRACT
  *
- *   amber  = escalation (we declined to answer)
- *   rose   = a validation problem (unsupported or fabricated citation)
- *   ocean  = interactive / cited / the brand
+ * Colour carries meaning here, and only meaning. This is a tool someone uses
+ * while deciding whether to trust a machine-generated answer; if a hue can
+ * appear for aesthetic reasons then no hue can be read as a signal.
  *
- * If a colour appears without one of those meanings, it is a bug.
- */
+ *   ocean    interactive, cited, brand
+ *   amber    escalation / abstention / a superseded source
+ *   rose     a validation failure — unsupported or fabricated citation
+ *   emerald  a verified-supported claim, positive feedback
+ *   violet   the `changelog` source type, and nothing else
+ *   slate    everything that is not one of the above
+ *
+ * A colour appearing outside that table is a bug.
+ *
+ * THE SINGLE MOST IMPORTANT ENTRY IS AMBER. An escalation must never render as
+ * an error. Abstaining is the system working correctly — Design.md's thesis is
+ * that in B2B support a wrong answer costs more than no answer — and red would
+ * train the user to read correct behaviour as a fault.
+ * ========================================================================== */
 
-html, body { height: 100%; }
+@layer base {
+  html,
+  body {
+    height: 100%;
+  }
 
-body {
-  @apply bg-slate-50 text-slate-800 antialiased;
+  body {
+    @apply bg-surface-page font-sans text-base text-slate-700 antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  /* Anything that is data gets the mono stack and lining figures. Applied at
+     the element level so a `<code>` in prose does not need a class. */
+  code,
+  kbd,
+  samp,
+  pre {
+    @apply font-mono;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* One focus ring for the whole app. The previous UI had none anywhere, which
+     made the keyboard path through an answer's citations unusable. `:focus-visible`
+     rather than `:focus` so a mouse click does not leave a ring behind. */
+  :where(a, button, input, textarea, select, summary, [tabindex]):focus-visible {
+    @apply outline-none ring-2 ring-ocean-500/60 ring-offset-2 ring-offset-surface;
+    border-radius: 0.25rem;
+  }
+
+  /* Deep links into a docs page must not land under the sticky header. */
+  :target,
+  [id] {
+    scroll-margin-top: 5.5rem;
+  }
+
+  ::selection {
+    @apply bg-ocean-100 text-ocean-900;
+  }
 }
 
-/* The blinking caret while the answer streams. Streaming exists to show
-   progress; a static block of text arriving all at once wastes that. */
-@keyframes fishack-caret { 0%, 45% { opacity: 1 } 50%, 95% { opacity: 0 } 100% { opacity: 1 } }
-.caret::after {
-  content: "▌";
-  @apply text-ocean-500 ml-0.5;
-  animation: fishack-caret 1.1s steps(1) infinite;
+@layer components {
+  /* --------------------------------------------------------------- prose --
+   * Long-form documentation styling, applied once at the container instead of
+   * per-element in every page. Kept hand-written rather than pulling in
+   * @tailwindcss/typography: that plugin styles ~40 elements we do not use and
+   * fights every custom block (callouts, tables, diagrams) it does not know
+   * about.
+   */
+  .prose-doc {
+    @apply text-base text-slate-700;
+  }
+  .prose-doc > * + * {
+    @apply mt-4;
+  }
+  .prose-doc h2 {
+    @apply mt-12 scroll-mt-24 text-2xl font-semibold tracking-tight text-slate-900;
+  }
+  .prose-doc h3 {
+    @apply mt-9 scroll-mt-24 text-lg font-semibold text-slate-900;
+  }
+  .prose-doc h2 + *,
+  .prose-doc h3 + * {
+    @apply mt-3;
+  }
+  .prose-doc strong {
+    @apply font-semibold text-slate-900;
+  }
+  .prose-doc a {
+    @apply font-medium text-ocean-600 underline decoration-ocean-300 underline-offset-2
+           hover:decoration-ocean-600;
+  }
+  .prose-doc ul {
+    @apply space-y-2 pl-5;
+    list-style-type: disc;
+  }
+  .prose-doc ol {
+    @apply space-y-2 pl-5;
+    list-style-type: decimal;
+  }
+  .prose-doc li::marker {
+    @apply text-slate-300;
+  }
+  /* Inline code. Bordered rather than filled — a filled chip inside a sentence
+     reads as a button, and half of these are file paths nobody can click. */
+  .prose-doc :not(pre) > code {
+    @apply rounded-sm border border-line bg-surface-sunken px-1 py-px text-[0.85em] text-slate-800;
+  }
+
+  /* ---------------------------------------------------------- scrollbars --
+   * Thin, so the conversation column and the sources panel do not fight for
+   * width. Firefox gets the standard property; WebKit gets the vendor one.
+   */
+  .thin-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: theme("colors.slate.300") transparent;
+  }
+  .thin-scroll::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  .thin-scroll::-webkit-scrollbar-thumb {
+    @apply rounded-full bg-slate-300;
+  }
+  .thin-scroll::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-400;
+  }
+  .thin-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  /* -------------------------------------------------------------- caret --
+   * The streaming caret. Streaming exists to show progress, and a block of
+   * text arriving all at once wastes that. Drawn as a pseudo-element block
+   * rather than the "▌" character the previous UI used: that glyph renders at
+   * a different width in every font and is announced by screen readers.
+   */
+  .caret::after {
+    content: "";
+    @apply ml-0.5 inline-block h-[1.05em] w-[2px] translate-y-[0.15em] rounded-full bg-ocean-500;
+    animation: fishack-caret 1.1s steps(1) infinite;
+  }
+
+  /* --------------------------------------------------------- data figure --
+   * One class for every number in the app. See tailwind.config.ts rule 3.
+   */
+  .figure {
+    @apply font-mono tabular-nums;
+    font-feature-settings: "tnum" 1, "zero" 1;
+  }
 }
 
-/* Thin scrollbars so the two panels don't fight for width. */
-.thin-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
-.thin-scroll::-webkit-scrollbar-thumb { @apply bg-slate-300 rounded-full; }
-.thin-scroll::-webkit-scrollbar-track { background: transparent; }
+@keyframes fishack-caret {
+  0%,
+  45% {
+    opacity: 1;
+  }
+  50%,
+  95% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+/* Respect the user's motion preference. Every animation in this app is
+   decorative except the caret, which degrades to a static block. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
