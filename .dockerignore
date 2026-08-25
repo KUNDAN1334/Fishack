@@ -1,0 +1,34 @@
+# Keeps the build context small and the image clean.
+#
+# Without this file, `docker build` uploads the entire project directory as
+# context — including .venv, venv, node_modules, .git and the frontend. On this
+# repo that is well over a gigabyte, and on a metered connection deploying to a
+# cloud builder it is the slowest part of the whole deploy.
+
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+.git/
+.github/
+_to_delete/
+
+# The frontend is built and deployed separately (Vercel), and its own
+# Dockerfile has its own context.
+frontend/
+
+# Never bake secrets into an image.
+.env
+
+# Documentation and eval output are not needed at runtime. The CORPUS is
+# (data/raw), so data/ is deliberately NOT ignored — but reports are.
+docs/
+fishnet_reports/
+
+*.md
+!hf-space-README.md
