@@ -8,14 +8,7 @@ A multi-tenant RAG customer support assistant for "Flowlytics", a fictional B2B 
 
 ## Demo
 
-<!-- DEMO GIF PLACEHOLDER
-     Frames worth capturing, in order:
-       1. sources panel populating BEFORE the first token
-       2. the planted stale-data conflict — two sources, one flagged "superseded in part"
-       3. an out-of-scope question abstaining with zero LLM calls
-       4. clicking [2] to reveal the chunk + the validator's per-claim verdict
-       5. /admin — latency per stage, cost per query, cache hit rate
--->
+
 
 > **GIF not recorded yet.** The five queries under [Try it](#try-it) walk the
 > same path in about three minutes, and each one is labelled with what it is
